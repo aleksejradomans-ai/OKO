@@ -52,7 +52,7 @@ NSSM: службы OkoBot и OkoWatcher
 ## Установка
 
 ```powershell
-git clone <repo> oko; cd oko
+git clone https://github.com/aleksejradomans-ai/OKO.git oko; cd oko
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt -r oko_rag\requirements.txt
 ollama pull gemma2
