@@ -864,3 +864,64 @@ class TestSystemDegradedText:
     def test_marker_gets_new_explanation(self):
         out = bot._explain_error("[ERR: SYSTEM_DEGRADED]")
         assert out.startswith("[ERR: SYSTEM_DEGRADED] Предохранитель открыт")
+
+
+# ------------------------------------------------------------------
+# CALLBACK_ANSWER_EARLY: ответ на нажатие кнопки до долгой индексации
+# (Telegram принимает answer() только ~15 с; индексация идёт дольше ->
+# BadRequest "Query is too old" -> [ERR: INTERNAL] после успешного approve)
+# ------------------------------------------------------------------
+
+class TestCallbackAnsweredBeforeWork:
+    def test_answer_happens_before_approve(self, admin_ids, isolated_db, monkeypatch):
+        import asyncio
+        bot._notified_uuids.clear()
+        update = _make_callback_update(111, "approve_uuid-8")
+        seen = {}
+
+        def approve(task_uuid):
+            seen["answers_before_approve"] = update.callback_query.answer.await_count
+            return Path("/fake/staging/doc.txt")
+
+        staging_manager = MagicMock()
+        staging_manager.approve = MagicMock(side_effect=approve)
+        monkeypatch.setattr(bot.knowledge_indexer, "process_single", MagicMock(return_value="processed"))
+        context = _make_callback_context(staging_manager=staging_manager)
+
+        asyncio.run(bot.handle_staging_callback(update, context))
+
+        assert seen["answers_before_approve"] == 1
+        update.callback_query.answer.assert_awaited_once()
+
+    def test_expired_query_does_not_break_approve(self, admin_ids, isolated_db, monkeypatch):
+        import asyncio
+        from telegram.error import BadRequest
+        bot._notified_uuids.clear()
+        update = _make_callback_update(111, "approve_uuid-9")
+        update.callback_query.answer = AsyncMock(
+            side_effect=BadRequest("Query is too old and response timeout expired or query id is invalid"))
+        staging_manager = MagicMock()
+        staging_manager.approve = MagicMock(return_value=Path("/fake/staging/doc.txt"))
+        monkeypatch.setattr(bot.knowledge_indexer, "process_single", MagicMock(return_value="processed"))
+        context = _make_callback_context(staging_manager=staging_manager)
+
+        asyncio.run(bot.handle_staging_callback(update, context))
+
+        staging_manager.approve.assert_called_once_with("uuid-9")
+        msg = update.callback_query.edit_message_text.await_args.args[0]
+        assert "Approved" in msg
+
+    def test_reject_answered_before_work(self, admin_ids):
+        import asyncio
+        bot._notified_uuids.clear()
+        update = _make_callback_update(111, "reject_uuid-10")
+        seen = {}
+        staging_manager = MagicMock()
+        staging_manager.reject = MagicMock(
+            side_effect=lambda u: seen.setdefault("answers", update.callback_query.answer.await_count))
+        context = _make_callback_context(staging_manager=staging_manager)
+
+        asyncio.run(bot.handle_staging_callback(update, context))
+
+        assert seen["answers"] == 1
+        update.callback_query.answer.assert_awaited_once()

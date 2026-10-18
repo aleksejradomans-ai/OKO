@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -986,6 +987,16 @@ def _index_approved_file_in_thread(file_path: Path, override_category: str | Non
         conn.close()
 
 
+async def _answer_callback_safely(query) -> None:
+    """CALLBACK_ANSWER_EARLY: Telegram принимает answer() только ~15 с после
+    нажатия. Просроченный запрос (бот был занят или перезапускался) не должен
+    отменять approve/reject: только WARNING в лог."""
+    try:
+        await query.answer()
+    except BadRequest as e:
+        logger.warning("Callback answer failed (query expired?): %s", e)
+
+
 async def handle_staging_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает нажатия на inline-кнопках из staging_monitor_job:
     выбор категории (post-hoc, см. историю решений — Развилка 1),
@@ -1085,6 +1096,11 @@ async def handle_staging_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.answer("Unknown action.")
         return
 
+    # Ответ на нажатие ДО индексации (эмбеддинги/OCR идут десятки секунд).
+    # Раньше answer() стоял в finally: после успешного approve -> BadRequest
+    # "Query is too old" -> [ERR: INTERNAL] оператору.
+    await _answer_callback_safely(query)
+
     try:
         if action == "approve":
             # Категория читается ДО staging_manager.approve() — тот удаляет
@@ -1139,7 +1155,6 @@ async def handle_staging_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text(f"⚠️ Error processing {task_uuid}: {e}")
     finally:
         _notified_uuids.discard(task_uuid)
-        await query.answer()
 
 
 async def handle_pdf_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
