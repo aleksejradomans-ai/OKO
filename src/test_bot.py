@@ -848,3 +848,19 @@ class TestGuardrailsRemoved:
 
     def test_input_filter_is_data_hygiene(self):
         assert 'app.bot_data["dispatcher"] = DataHygieneFilter()' in self._src()
+
+
+# ------------------------------------------------------------------
+# DEGRADED_TEXT_FIX: пояснение к SYSTEM_DEGRADED соответствует поведению
+# (при открытом предохранителе запрос к модели не отправляется вовсе)
+# ------------------------------------------------------------------
+
+class TestSystemDegradedText:
+    def test_explains_that_requests_are_not_sent(self):
+        text = bot._ERR_TEXT["SYSTEM_DEGRADED"]
+        assert "не отправляются модели" in text
+        assert "проверка ответов временно отключена" not in text
+
+    def test_marker_gets_new_explanation(self):
+        out = bot._explain_error("[ERR: SYSTEM_DEGRADED]")
+        assert out.startswith("[ERR: SYSTEM_DEGRADED] Предохранитель открыт")
