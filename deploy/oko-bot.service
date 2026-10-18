@@ -1,0 +1,57 @@
+[Unit]
+Description=Oko Telegram Bot Interface (Bot API)
+After=network-online.target
+Wants=network-online.target
+
+# StartLimitIntervalSec/StartLimitBurst относятся к секции [Unit], не
+# [Service] — подтверждено через systemd-analyze verify, который сообщал
+# "Unknown key name 'StartLimitIntervalSec' in section 'Service'" при
+# первой попытке разместить их рядом с Restart=/RestartSec=. Падение бота
+# (сетевой сбой, невалидный токен) не должно штормить systemd бесконечными
+# быстрыми перезапусками — лимит ниже останавливает юнит, если он падает
+# чаще 5 раз за 60 секунд, вместо бесконечного respawn loop.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=oko
+Group=oko
+
+# ВАЖНО: WorkingDirectory задаёт cwd процесса. Если AI_BASE_DIR в .env
+# относительный (например "../data"), он резолвится ОТНОСИТЕЛЬНО ЭТОЙ
+# директории — подтверждено тестом в ходе разработки (см. историю решений:
+# относительный AI_BASE_DIR=../data при ошибочном cwd резолвился на
+# уровень выше всего проекта). Указание WorkingDirectory=/opt/oko/src
+# здесь — это и есть тот самый "cd src", который требует регламент,
+# просто закреплённый декларативно в systemd, а не оставленный на
+# дисциплину оператора при ручном запуске.
+WorkingDirectory=/opt/oko/src
+EnvironmentFile=/opt/oko/.env
+
+# StandardOutput/StandardError перенаправляют вывод bot.py (который
+# логирует через logging.basicConfig в stderr, без FileHandler) в реальный
+# файл на диске. Без этого --target-log-file в oko-bot-watchdog.service
+# указывал бы на несуществующий файл, и error-rate проверка watchdog'а
+# молча не работала бы НИКОГДА (не падает с ошибкой, просто не находит
+# ERROR-строк, потому что файла нет — найдено при подготовке watchdog-
+# юнитов, не теоретический риск). append: означает дозапись, не
+# перезапись при каждом перезапуске сервиса — иначе история ошибок
+# терялась бы при каждом Restart=on-failure, что особенно плохо именно в
+# сценарии, который мы пытаемся мониторить (повторяющиеся падения).
+StandardOutput=append:/opt/oko/data/bot.log
+StandardError=append:/opt/oko/data/bot.log
+
+ExecStart=/usr/bin/python3 /opt/oko/src/bot.py
+
+Restart=on-failure
+RestartSec=5
+
+# Изоляция файловой системы: процессу не нужен доступ за пределами
+# собственного каталога проекта и стандартных системных путей.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/oko/data
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,47 @@
+# --- Секреты — НИКОГДА не коммитить ---
+.env
+*.env
+
+# --- Данные и состояние времени выполнения (BASE_DIR, по умолчанию ./data) ---
+data/
+knowledge_base.db
+knowledge_base.db-wal
+knowledge_base.db-shm
+registry_state.json
+staging/
+snapshots/
+
+# --- ChromaDB (oko_rag/) ---
+oko_rag/chroma_db/
+
+# --- Python ---
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# --- IDE / OS ---
+.vscode/
+.DS_Store
+
+.tmp.driveupload/
+
+logs/
+inventory.txt
+
+memory/
+
+games.txt
+halt_diagnosis_*.txt
+*.bak
+*.prepatch
+*.premojibake
+*.patch
+data_test/
+oko_rag/chroma_db.*/
+
+# cleanup 2026-10-14
+*.bak_*
+*.preguard
+*.OTHER.py
+_quarantine_*/
+eval/judge_variants_result.json

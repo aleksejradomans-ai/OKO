@@ -1,0 +1,42 @@
+[Unit]
+Description=Oko Process Watchdog (sidecar health monitor for oko-bot)
+After=oko-bot.service
+BindsTo=oko-bot.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=oko
+Group=oko
+
+# Тот же принцип, что в oko-bot.service/oko-watcher.service: cwd закреплён
+# декларативно, не оставлен на дисциплину оператора.
+WorkingDirectory=/opt/oko/src
+EnvironmentFile=/opt/oko/.env
+
+# Параметры передаются явно как аргументы CLI, не через переменные
+# окружения (в отличие от config.py) — process_watchdog.py намеренно не
+# импортирует config.py вообще, чтобы не тянуть зависимость от
+# TELEGRAM_TOKEN/_require_env для скрипта, чья единственная задача —
+# мониторить ДРУГОЙ процесс. Пути ниже должны совпадать с тем, что
+# реально пишет bot.py (config.BASE_DIR / "bot.pid" и "bot.heartbeat").
+ExecStart=/usr/bin/python3 /opt/oko/src/process_watchdog.py \
+    --target-pid-file /opt/oko/data/bot.pid \
+    --heartbeat-file /opt/oko/data/bot.heartbeat \
+    --target-log-file /opt/oko/data/bot.log \
+    --memory-limit-mb 512 \
+    --error-rate-limit 5 \
+    --error-window-sec 60 \
+    --heartbeat-timeout-sec 120 \
+    --check-interval-sec 10
+
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/oko/data
+
+[Install]
+WantedBy=multi-user.target

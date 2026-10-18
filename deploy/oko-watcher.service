@@ -1,0 +1,37 @@
+[Unit]
+Description=Oko Knowledge Watcher (Filesystem monitor + indexer trigger)
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=oko
+Group=oko
+
+# cwd закреплён декларативно по тому же принципу, что в oko-bot.service —
+# относительный AI_BASE_DIR резолвится относительно WorkingDirectory этого
+# юнита. Комментарий про subprocess-вызов knowledge_indexer.py УСТАРЕЛ:
+# тот вызов был убран при интеграции Task B (HITL staging) — run_system.py
+# теперь вызывает staging_manager.move_to_staging(), не subprocess.run() на
+# knowledge_indexer.py напрямую (см. историю решений).
+WorkingDirectory=/opt/oko/src
+EnvironmentFile=/opt/oko/.env
+
+# См. комментарий в oko-bot.service про StandardOutput/StandardError —
+# тот же принцип, нужен реальный файл для error-rate проверки watchdog'а
+# (oko-watcher-watchdog.service читает --target-log-file=.../run_system.log).
+StandardOutput=append:/opt/oko/data/run_system.log
+StandardError=append:/opt/oko/data/run_system.log
+
+ExecStart=/usr/bin/python3 /opt/oko/src/run_system.py
+
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/oko/data
+
+[Install]
+WantedBy=multi-user.target
