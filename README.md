@@ -56,6 +56,7 @@ git clone https://github.com/aleksejradomans-ai/OKO.git oko; cd oko
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt -r oko_rag\requirements.txt
 ollama pull gemma2
+ollama pull bge-m3
 Copy-Item .env.example .env      # заполнить TELEGRAM_TOKEN и ADMIN_USER_IDS
 ```
 
