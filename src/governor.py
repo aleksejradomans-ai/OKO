@@ -22,6 +22,7 @@ import prompt_safety
 from src.manifesto import Manifesto
 from src.monitor import ComplianceEvent, ComplianceMonitor
 from src.structural_check import check as structural_check
+from src.response_metrics import measure as measure_response
 from src.registry import Registry
 from src.circuit_breaker import BreakerState, CircuitBreaker
 
@@ -383,6 +384,7 @@ class AgentGovernor:
         final = await self._enforce_compliance(raw, prompt)
         if not is_service_marker(final):
             self._observe_structure(final, point="B", question=user_input)
+            self._observe_metrics(final, point="B")
         return final
 
     def _observe_structure(self, text: str, point: str, question: str = "") -> None:
@@ -397,7 +399,20 @@ class AgentGovernor:
             for issue in structural_check(text, sources=sources, question=question):
                 logger.warning("STRUCT point=%s kind=%s detail=%s", point, issue.kind, issue.detail)
         except Exception as e:
-            logger.error("Structural check failed (ignored): %s", e)
+            # OBSERVER_WARNING (19.10): сбой наблюдателя ответ не ломает -- WARNING,
+            # не ERROR (иначе process_watchdog считал бы красной строкой).
+            logger.warning("Structural check failed (ignored): %s", e)
+
+    def _observe_metrics(self, text: str, point: str) -> None:
+        """RESPONSE_METRICS (M6): пассивные метрики ответа -> одна INFO-строка
+        "[METRICS] point=..." без текста ответа. B -- итог execute_request после
+        судьи; D -- ответ /discuss (идёт мимо судьи). Ни одно решение от метрик
+        не зависит (CircuitBreaker, судья, алерты их не читают). Сбой метрики --
+        WARNING [METRICS_FAIL], ответ не меняется."""
+        try:
+            logger.info("[METRICS] point=%s %s", point, measure_response(text).to_log())
+        except Exception as e:
+            logger.warning("[METRICS_FAIL] point=%s %s: %s", point, type(e).__name__, e)
 
     async def execute_discuss_request(
         self,
@@ -442,7 +457,7 @@ class AgentGovernor:
         )
 
         try:
-            return await self._call_llm_with_timeout(
+            answer = await self._call_llm_with_timeout(
                 prompt,
                 system_prompt=self.identity_text,
                 options={"num_ctx": DISCUSS_NUM_CTX},
@@ -466,6 +481,11 @@ class AgentGovernor:
             return log_service_code(
                 "DISCUSS_FAULT", f"Discuss request failed for user={user_id}: {e}"
             )
+        # RESPONSE_METRICS: /discuss идёт мимо судьи -- метрики здесь единственный
+        # сигнал о качестве ответа (только лог).
+        if not is_service_marker(answer):
+            self._observe_metrics(answer, point="D")
+        return answer
 
     @staticmethod
     def _escape_tag(text: str, tag: str) -> str:
