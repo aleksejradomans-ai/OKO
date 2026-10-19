@@ -1376,13 +1376,26 @@ async def heartbeat_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     heartbeat_file.touch()
 
 
-async def wait_for_model(governor: AgentGovernor, max_attempts: int = 5, delay_s: float = 3.0) -> None:
+STARTUP_BACKOFF_CAP_S = 30.0
+
+
+def _startup_delays(max_attempts: int, delay_s: float, cap_s: float = STARTUP_BACKOFF_CAP_S) -> list[float]:
+    """STARTUP_BACKOFF (M5, 19.10): паузы МЕЖДУ попытками -- delay_s * 2**i,
+    потолок cap_s. 6 попыток, 3 с -> 3, 6, 12, 24, 30 (~75 с ожидания):
+    OllamaService (NSSM) после загрузки Windows поднимается не мгновенно,
+    прежние 5 x 3 с (~12 с) не дожидались её и бот уходил в рестарт NSSM."""
+    return [min(cap_s, delay_s * (2 ** i)) for i in range(max(0, max_attempts - 1))]
+
+
+async def wait_for_model(governor: AgentGovernor, max_attempts: int = 6, delay_s: float = 3.0) -> None:
     """Ретраи поверх Registry.check_model_loaded (синхронный, single-shot).
     Оборачивается в asyncio.to_thread, чтобы не блокировать event loop на
     время urllib-запроса. Поднимает RuntimeError, если модель не готова
     после всех попыток — вызывающий код (post_init) решает, что делать
-    дальше (обычно — не давать боту начать поллинг)."""
+    дальше (обычно — не давать боту начать поллинг). Паузы -- нарастающие
+    (_startup_delays)."""
     error_msg = "unknown error"
+    delays = _startup_delays(max_attempts, delay_s)
     for attempt in range(1, max_attempts + 1):
         is_ok, error_msg = await asyncio.to_thread(
             governor.registry.check_model_loaded, timeout_s=2.0
@@ -1394,7 +1407,7 @@ async def wait_for_model(governor: AgentGovernor, max_attempts: int = 5, delay_s
             "Ollama not ready (attempt %d/%d): %s", attempt, max_attempts, error_msg
         )
         if attempt < max_attempts:
-            await asyncio.sleep(delay_s)
+            await asyncio.sleep(delays[attempt - 1])
 
     raise RuntimeError(f"Ollama not ready after {max_attempts} attempts: {error_msg}")
 
