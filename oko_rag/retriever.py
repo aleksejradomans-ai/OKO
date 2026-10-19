@@ -1,12 +1,65 @@
+import logging
 import os
 import sys
-from indexer import get_collection
+from indexer import get_client, get_collection  # noqa: F401  (get_collection -- обратная совместимость)
 from embeddings import get_embedding
-from rag_config import TOP_K
+from rag_config import COLLECTION_NAME, TOP_K
+
+logger = logging.getLogger("oko_rag.retriever")
+
+_metric_warned = False
+
+
+def _is_missing_collection(e: Exception) -> bool:
+    """chromadb 1.x: NotFoundError; 0.x: ValueError("Collection ... does not exist")."""
+    if type(e).__name__ == "NotFoundError":
+        return True
+    return isinstance(e, ValueError) and "does not exist" in str(e)
+
+
+def _space(collection) -> str:
+    meta = getattr(collection, "metadata", None) or {}
+    if meta.get("hnsw:space"):
+        return str(meta["hnsw:space"])
+    cfg = getattr(collection, "configuration_json", None) or {}
+    return str((cfg.get("hnsw") or {}).get("space") or "l2")
+
+
+def _open_collection():
+    """RAG_COLLECTION_GUARD: коллекция для ПОИСКА. В отличие от
+    indexer.get_collection() (запись, get_or_create) не создаёт коллекцию:
+    раньше опечатка/пропажа OKO_COLLECTION или удалённая chroma_db молча
+    давали новую пустую коллекцию и пустой контекст без единого сигнала.
+    Нет коллекции -> WARNING [RAG_COLLECTION_MISSING] и None (пустой
+    контекст). Это не ошибка на свежей установке: коллекцию создаёт первый
+    Approve. Метрика не cosine при включённом пороге -> один WARNING
+    [RAG_METRIC_MISMATCH] за процесс."""
+    global _metric_warned
+    try:
+        collection = get_client().get_collection(name=COLLECTION_NAME)
+    except Exception as e:
+        if not _is_missing_collection(e):
+            raise
+        logger.warning(
+            "[RAG_COLLECTION_MISSING] коллекции %r нет в chroma_db -- контекст пуст. "
+            "Проверь OKO_COLLECTION в .env; на свежей установке коллекцию создаёт "
+            "первый Approve.", COLLECTION_NAME,
+        )
+        return None
+    if not _metric_warned and _max_distance() > 0 and _space(collection) != "cosine":
+        _metric_warned = True
+        logger.warning(
+            "[RAG_METRIC_MISMATCH] коллекция %r использует метрику %s, а порог "
+            "OKO_RAG_MAX_DISTANCE откалиброван под cosine (ADR-006).",
+            COLLECTION_NAME, _space(collection),
+        )
+    return collection
 
 
 def search(query: str, top_k: int = TOP_K) -> list[dict]:
-    collection = get_collection()
+    collection = _open_collection()
+    if collection is None:
+        return []
     query_embedding = get_embedding(query)
     results = collection.query(query_embeddings=[query_embedding], n_results=top_k)
 

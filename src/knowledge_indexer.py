@@ -68,6 +68,23 @@ except ImportError as e:
     )
     RAG_SYNC_AVAILABLE = False
 
+# M3_INGEST_GUARD: проверка читаемости (RAG_READABILITY_GUARD в loader.py) и
+# ошибки разбора PDF. Отдельный try: старый loader без check_readable не
+# должен выключать весь RAG-контур.
+try:
+    from loader import UnreadableDocumentError, check_readable
+except ImportError:
+    class UnreadableDocumentError(ValueError):
+        """Заглушка: loader.py недоступен или без RAG_READABILITY_GUARD."""
+
+    check_readable = None
+
+try:
+    from pypdf.errors import PyPdfError as _PdfParseError
+except ImportError:
+    class _PdfParseError(Exception):
+        """Заглушка: pypdf недоступен."""
+
 # --- КОНФИГУРАЦИЯ ---
 # BASE_DIR берётся из config.py — единая точка правды, общая с bot.py и
 # run_system.py. Раньше здесь был захардкожен pathlib.Path(r"C:\AI"), что на
@@ -344,6 +361,36 @@ def classify_content(text: str, filename: str) -> str:
     return DEFAULT_CATEGORY
 
 
+def _reject_document(file_path: pathlib.Path, status: str, reason: str) -> str:
+    """M3_INGEST_GUARD: плохой входной документ -> ARCHIVE_DIR/rejected.
+
+    WARNING, не ERROR: это свойство файла, не сбой системы (светофор кодов,
+    watchdog считает только [ERROR]/[CRITICAL]). Перемещение, не удаление.
+    rejected лежит внутри ARCHIVE_DIR (внутри INPUT_DIR) -- безопасно по тем
+    же причинам, что и сам ARCHIVE_DIR: glob() и наблюдатель run_system.py
+    не рекурсивны. Путь вычисляется при вызове, не на уровне модуля -- тесты
+    подменяют ARCHIVE_DIR через monkeypatch.
+    """
+    tag = "[UNREADABLE_DOCUMENT]" if status == "unreadable" else "[EMPTY_DOCUMENT]"
+    rejected_dir = ARCHIVE_DIR / "rejected"
+    rejected_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    dest_path = rejected_dir / f"{file_path.stem}_{stamp}{file_path.suffix}"
+
+    success, _ = retry_on_permission_error(
+        lambda: shutil.move(str(file_path), str(dest_path)),
+        max_attempts=config.IO_RETRY_MAX_ATTEMPTS,
+        base_delay_s=config.IO_RETRY_BASE_DELAY_S,
+        op_description=f"Reject move ({file_path.name})",
+    )
+    logger.warning(
+        "%s %s: не проиндексирован (%s: %s) -> %s",
+        tag, file_path.name, status, reason,
+        dest_path if success else "файл остался на месте (перемещение не удалось)",
+    )
+    return status
+
+
 def process_single(
     file_path: pathlib.Path,
     conn: sqlite3.Connection,
@@ -370,10 +417,17 @@ def process_single(
     для batch-сканирования (index_all_files), где категория выбирается
     только автоматически.
 
-    Возвращает строку статуса: "processed", "duplicate", "empty" — не
-    бросает исключение на штатных путях, только на реальных сбоях I/O
-    (которые вызывающий код должен поймать сам, как и раньше), либо если
-    PDF получен, а oko_rag/loader.py недоступен (RuntimeError — см. ниже).
+    Возвращает строку статуса: "processed", "duplicate", "empty",
+    "unreadable" — не бросает исключение на штатных путях, только на
+    реальных сбоях I/O (которые вызывающий код должен поймать сам, как и
+    раньше), либо если PDF получен, а oko_rag/loader.py недоступен
+    (RuntimeError — см. ниже).
+
+    M3_INGEST_GUARD: "empty" (0 байт / нет текста) и "unreadable" (не UTF-8,
+    символы-заменители, битый PDF) -- плохой ВХОД, не сбой системы: в SQLite
+    и ChromaDB ничего не пишется, файл перемещается в ARCHIVE_DIR/rejected
+    (раньше "empty" оставлял файл в staging навсегда, а нечитаемый файл
+    давал исключение -> "SECURITY: ..." в Telegram и файл-сироту в staging).
     """
     # ARCHIVE_DIR.mkdir раньше вызывался только в index_all_files() —
     # это делало process_single небезопасной при прямом вызове извне
@@ -392,19 +446,30 @@ def process_single(
     # сбоев I/O: вызывающий код (index_all_files, handle_staging_callback
     # в bot.py) уже ловит Exception и логирует, не теряя файл молча.
     ext = file_path.suffix.lower()
-    if ext == ".pdf":
-        if not RAG_SYNC_AVAILABLE:
-            raise RuntimeError(
-                f"Невозможно обработать PDF {file_path.name}: "
-                f"oko_rag/loader.py недоступен"
-            )
-        content = load_document(str(file_path))
-    else:
-        content = file_path.read_text(encoding="utf-8")
+    if file_path.stat().st_size == 0:
+        return _reject_document(file_path, "empty", "0 байт")
+
+    try:
+        if ext == ".pdf":
+            if not RAG_SYNC_AVAILABLE:
+                raise RuntimeError(
+                    f"Невозможно обработать PDF {file_path.name}: "
+                    f"oko_rag/loader.py недоступен"
+                )
+            content = load_document(str(file_path))
+        else:
+            content = file_path.read_text(encoding="utf-8")
+            if check_readable is not None:
+                check_readable(content, file_path.name)
+    except UnicodeDecodeError as e:
+        return _reject_document(
+            file_path, "unreadable", f"не UTF-8 ({e.reason}, байт {e.start})"
+        )
+    except (UnreadableDocumentError, _PdfParseError) as e:
+        return _reject_document(file_path, "unreadable", f"{type(e).__name__}: {e}")
 
     if not content.strip():
-        logger.warning("Пропущен пустой файл: %s", file_path.name)
-        return "empty"
+        return _reject_document(file_path, "empty", "нет текста")
 
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
 

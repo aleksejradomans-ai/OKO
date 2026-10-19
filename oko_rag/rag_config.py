@@ -29,10 +29,18 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DATA_DIR = os.path.join(BASE_DIR, "documents")   # сюда кладёшь PDF/TXT для индексации
 DB_DIR = os.path.join(BASE_DIR, "chroma_db")     # векторная БД, персистентная, на диске
-# Имя коллекции берётся из .env (OKO_COLLECTION), по умолчанию прежнее.
-# Так переключение на другую коллекцию (например, после смены модели
-# эмбеддингов) и откат делаются правкой .env, без правки кода.
-COLLECTION_NAME = os.getenv("OKO_COLLECTION", "oko_knowledge")
+# Имя коллекции берётся из .env (OKO_COLLECTION). Так переключение на другую
+# коллекцию (например, после смены модели эмбеддингов) и откат делаются
+# правкой .env, без правки кода.
+# RAG_COLLECTION_GUARD (19.10): по умолчанию -- коллекция под текущую модель
+# эмбеддингов (bge-m3), а не прежняя "oko_knowledge" (другая модель, удалена
+# 19.10): при пропавшей строке в .env поиск молча шёл бы по векторам чужой
+# модели -- без ошибок, с мусором в контексте. Пустое значение = не задано.
+DEFAULT_COLLECTION = "oko_knowledge_bge_m3"
+COLLECTION_NAME = (os.getenv("OKO_COLLECTION") or "").strip() or DEFAULT_COLLECTION
+# Метрика коллекции: порог OKO_RAG_MAX_DISTANCE (ADR-006) откалиброван под cosine.
+# Применяется только при СОЗДАНИИ коллекции (существующую chromadb не меняет).
+COLLECTION_METADATA = {"hnsw:space": "cosine"}
 
 # Формат собирается так же, как в knowledge_indexer.py::_request_embedding_vector
 # (f"http://{config.OLLAMA_HOST}:{config.OLLAMA_PORT}/..."), чтобы контракт

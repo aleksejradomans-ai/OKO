@@ -4,6 +4,7 @@ import hashlib
 import chromadb
 
 from rag_config import DATA_DIR, DB_DIR, COLLECTION_NAME, CHUNK_SIZE, CHUNK_OVERLAP
+from rag_config import COLLECTION_METADATA
 from loader import load_document, chunk_text
 from embeddings import get_embedding
 
@@ -17,8 +18,14 @@ def get_client() -> chromadb.PersistentClient:
 
 
 def get_collection():
+    """Коллекция для ЗАПИСИ (создаётся при первом Approve).
+
+    RAG_COLLECTION_GUARD: новая коллекция создаётся с метрикой cosine -- без
+    неё chromadb берёт l2, и порог OKO_RAG_MAX_DISTANCE (cosine, ADR-006) на
+    свежей установке отсекал бы почти всё. Для существующей коллекции
+    metadata игнорируется (проверено на chromadb 1.5.9)."""
     client = get_client()
-    return client.get_or_create_collection(name=COLLECTION_NAME)
+    return client.get_or_create_collection(name=COLLECTION_NAME, metadata=COLLECTION_METADATA)
 
 
 def content_hash(text: str) -> str:

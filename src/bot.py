@@ -987,14 +987,47 @@ def _index_approved_file_in_thread(file_path: Path, override_category: str | Non
         conn.close()
 
 
-async def _answer_callback_safely(query) -> None:
+async def _answer_callback_safely(query, *args, **kwargs) -> None:
     """CALLBACK_ANSWER_EARLY: Telegram принимает answer() только ~15 с после
     нажатия. Просроченный запрос (бот был занят или перезапускался) не должен
-    отменять approve/reject: только WARNING в лог."""
+    отменять approve/reject: только WARNING в лог.
+    CALLBACK_EDGE_GUARD: аргументы (текст, show_alert) пробрасываются как есть."""
     try:
-        await query.answer()
+        await query.answer(*args, **kwargs)
     except BadRequest as e:
         logger.warning("Callback answer failed (query expired?): %s", e)
+
+
+async def _edit_message_safely(query, text: str, **kwargs) -> None:
+    """CALLBACK_EDGE_GUARD: повторный клик по той же кнопке даёт тот же текст ->
+    BadRequest "Message is not modified" -> раньше необработанное исключение,
+    [ERROR] в логе и [ERR: INTERNAL] оператору. Сообщение уже в нужном
+    состоянии: DEBUG. Прочие BadRequest (сообщение удалено/слишком старое) --
+    WARNING: действие (approve/reject/запись) уже выполнено, падать нельзя."""
+    try:
+        await query.edit_message_text(text, **kwargs)
+    except BadRequest as e:
+        if "not modified" in str(e).lower():
+            logger.debug("Callback message unchanged (repeat click): %s", e)
+        else:
+            logger.warning("Callback message edit failed: %s", e)
+
+
+class _IndexingFailed(Exception):
+    """M3_INGEST_GUARD: сбой ИНДЕКСАЦИИ после успешного approve. Отдельный тип,
+    чтобы ValueError из индексации (UnicodeDecodeError, UnreadableDocumentError
+    -- оба подклассы ValueError) не попадал в ветку "SECURITY: hash mismatch",
+    а KeyError -- в ветку "task not found"."""
+
+    def __init__(self, path: Path, cause: BaseException) -> None:
+        super().__init__(f"{path.name}: {cause}")
+        self.path = path
+        self.cause = cause
+
+
+# Статусы process_single, при которых документ НЕ проиндексирован, а
+# перемещён в archived/rejected (см. knowledge_indexer._reject_document).
+_REJECTED_STATUSES = frozenset({"empty", "unreadable"})
 
 
 async def handle_staging_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1012,7 +1045,7 @@ async def handle_staging_callback(update: Update, context: ContextTypes.DEFAULT_
     user_id = query.from_user.id
     if user_id not in config.ADMIN_USER_IDS:
         logger.warning("Unauthorized staging callback attempt from user_id=%s", user_id)
-        await query.answer("Not authorized.", show_alert=True)
+        await _answer_callback_safely(query, "Not authorized.", show_alert=True)
         return
 
     data = query.data or ""
@@ -1033,18 +1066,23 @@ async def handle_staging_callback(update: Update, context: ContextTypes.DEFAULT_
 
         task = staging_manager.repo.get_task(task_uuid)
         if task is None:
-            await query.answer("Задача не найдена (уже обработана?).", show_alert=True)
+            await _answer_callback_safely(
+                query, "Задача не найдена (уже обработана?).", show_alert=True
+            )
             return
 
         staging_manager.repo.update_category(task_uuid, cat_label)
 
+        # CALLBACK_EDGE_GUARD: ответ на нажатие ДО правки сообщения -- если
+        # правка упадёт, кнопка у оператора не останется "крутиться".
+        await _answer_callback_safely(query, f"Категория: {cat_label}")
         filename = Path(task["original_path"]).name if "original_path" in task else task_uuid
-        await query.edit_message_text(
+        await _edit_message_safely(
+            query,
             f"📄 Новый файл ждёт подтверждения:\n{filename}\nUUID: {task_uuid}\n"
             f"Категория: {cat_label}",
             reply_markup=_category_keyboard(task_uuid),
         )
-        await query.answer(f"Категория: {cat_label}")
         return
 
     # --- Game watcher candidate approval (games.txt) ---
@@ -1062,6 +1100,10 @@ async def handle_staging_callback(update: Update, context: ContextTypes.DEFAULT_
         prefix_len = len("game_add_") if is_add else len("game_ignore_")
         process_name = data[prefix_len:]
 
+        # CALLBACK_EDGE_GUARD: ответ ДО записи/правки (было: после -- при сбое
+        # edit_message_text answer() не вызывался вовсе).
+        await _answer_callback_safely(query)
+
         if is_add:
             games_file = Path(config.BASE_DIR).parent / "games.txt"
             try:
@@ -1073,18 +1115,17 @@ async def handle_staging_callback(update: Update, context: ContextTypes.DEFAULT_
                     if line.strip() and not line.strip().startswith("#")
                 )
                 if already_present:
-                    await query.edit_message_text(f"Already in games.txt: {process_name}")
+                    await _edit_message_safely(query, f"Already in games.txt: {process_name}")
                 else:
                     with open(games_file, "a", encoding="ascii") as f:
                         f.write(f"{process_name}\n")
-                    await query.edit_message_text(f"Added to games.txt: {process_name}")
+                    await _edit_message_safely(query, f"Added to games.txt: {process_name}")
             except Exception as e:
                 logger.error("Failed to add %s to games.txt: %s", process_name, e)
-                await query.edit_message_text(f"Error adding {process_name}: {e}")
+                await _edit_message_safely(query, f"Error adding {process_name}: {e}")
         else:
-            await query.edit_message_text(f"Ignored: {process_name}")
+            await _edit_message_safely(query, f"Ignored: {process_name}")
 
-        await query.answer()
         return
 
     # --- Approve / Reject ---
@@ -1093,7 +1134,7 @@ async def handle_staging_callback(update: Update, context: ContextTypes.DEFAULT_
     elif data.startswith("reject_"):
         action, task_uuid = "reject", data[len("reject_"):]
     else:
-        await query.answer("Unknown action.")
+        await _answer_callback_safely(query, "Unknown action.")
         return
 
     # Ответ на нажатие ДО индексации (эмбеддинги/OCR идут десятки секунд).
@@ -1131,28 +1172,52 @@ async def handle_staging_callback(update: Update, context: ContextTypes.DEFAULT_
             # sqlite3.Connection не переносим между потоками (тот же паттерн,
             # что уже используется в _fetch_history/_save_exchange/
             # _fetch_document_content в этом же файле).
-            status = await asyncio.to_thread(
-                _index_approved_file_in_thread, approved_path, override_category
-            )
+            # M3_INGEST_GUARD: исключение индексации заворачивается в
+            # _IndexingFailed -- ветки KeyError/ValueError ниже относятся
+            # ТОЛЬКО к approve() (нет задачи / hash mismatch).
+            try:
+                status = await asyncio.to_thread(
+                    _index_approved_file_in_thread, approved_path, override_category
+                )
+            except Exception as e:
+                raise _IndexingFailed(approved_path, e) from e
 
-            cat_note = f", категория: {override_category}" if override_category else ""
-            await query.edit_message_text(
-                f"✅ Approved and indexed: {approved_path.name} ({status}{cat_note})"
-            )
+            if status in _REJECTED_STATUSES:
+                await _edit_message_safely(
+                    query,
+                    f"⛔ Not indexed: {approved_path.name} ({status}). "
+                    f"Файл перемещён в archived/rejected, база знаний не изменена.",
+                )
+            else:
+                cat_note = f", категория: {override_category}" if override_category else ""
+                await _edit_message_safely(
+                    query,
+                    f"✅ Approved and indexed: {approved_path.name} ({status}{cat_note})",
+                )
         else:
             # reject() делает staging_path.unlink() синхронно — тот же
             # принцип, что и для approve() выше: обёрнуто ради полноты,
             # не потому что unlink() сам по себе тяжёлая операция.
             await asyncio.to_thread(staging_manager.reject, task_uuid)
-            await query.edit_message_text(f"❌ Rejected: uuid={task_uuid}")
+            await _edit_message_safely(query, f"❌ Rejected: uuid={task_uuid}")
+    except _IndexingFailed as e:
+        logger.error(
+            "Indexing failed after approve for uuid=%s (%s): %r",
+            task_uuid, e.path.name, e.cause,
+        )
+        await _edit_message_safely(
+            query,
+            f"⚠️ Indexing failed: {e.path.name}: {e.cause}\n"
+            f"Файл остался в staging, задача снята.",
+        )
     except KeyError:
-        await query.edit_message_text(f"⚠️ Task {task_uuid} not found (already processed?)")
+        await _edit_message_safely(query, f"⚠️ Task {task_uuid} not found (already processed?)")
     except ValueError as e:
         # Hash mismatch — файл подменён во время ожидания (Вариант Б).
-        await query.edit_message_text(f"🚨 SECURITY: {e}")
+        await _edit_message_safely(query, f"🚨 SECURITY: {e}")
     except Exception as e:
         logger.error(f"Staging callback failed for uuid={task_uuid}: {e}")
-        await query.edit_message_text(f"⚠️ Error processing {task_uuid}: {e}")
+        await _edit_message_safely(query, f"⚠️ Error processing {task_uuid}: {e}")
     finally:
         _notified_uuids.discard(task_uuid)
 
