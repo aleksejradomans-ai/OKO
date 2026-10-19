@@ -307,7 +307,10 @@ class TestTrafficLight:
         results = [run(gov.execute_request(f"запрос {i}")) for i in range(12)]
 
         assert results == ["[ERR: LLM_UNAVAILABLE]"] * 12
-        assert client.post.call_count == 12          # F1: ровно один вызов на запрос
+        # F1: не больше одного вызова на запрос; TRANSPORT_GATE (M5a): после
+        # THRESHOLD сбоев подряд остальные запросы в Ollama не отправляются.
+        import src.transport_gate as tg
+        assert client.post.call_count == tg.THRESHOLD
         assert cap.red() == [], [r.getMessage() for r in cap.red()]
         assert len(cap.with_marker("LLM_UNAVAILABLE")) == 12
         assert state(gov, "transport_failures") == 12

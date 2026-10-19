@@ -415,6 +415,31 @@ def _explain_error(response: str) -> str:
     return "\n".join(lines)
 
 
+def _transport_note(governor, response) -> str:
+    """TRANSPORT_GATE: при открытом предохранителе связи -- сколько ждать
+    следующей автоматической проверки Ollama. Пусто, если ответ не
+    [ERR: LLM_UNAVAILABLE] или предохранитель закрыт."""
+    if not (isinstance(response, str) and response.strip() == "[ERR: LLM_UNAVAILABLE]"):
+        return ""
+    try:
+        seconds = float(governor.transport_retry_in())
+    except Exception:
+        return ""
+    if seconds <= 0:
+        return ""
+    return f" Модель недоступна (служба Ollama не отвечает), автоповтор связи через ~{seconds:.0f} с."
+
+
+def _explain_for_user(governor, response) -> str:
+    """GATE_TEXT_FIX: при открытом предохранителе связи стандартное пояснение
+    LLM_UNAVAILABLE ("короткий запрос или повтор через минуту") неверно --
+    длина запроса ни на что не влияет. Тогда только маркер + _transport_note."""
+    note = _transport_note(governor, response)
+    if note:
+        return response.strip() + note
+    return _explain_error(response)
+
+
 def _with_notice(response: str, incidents) -> str:
     """Уведомление слоя B в начале ответа (конец может обрезаться)."""
     notice = build_notice(list(incidents or []))
@@ -613,7 +638,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("[ERR: SYSTEM_FAULT]")
         return
 
-    clean_response = core.clean_output(_explain_error(raw_response))
+    clean_response = core.clean_output(_explain_for_user(governor, raw_response))
     final_response = core.format_final(clean_response[:MAX_MSG_LEN - len(core.name) - 4])
     logger.info(f"Response routed to {user_id}: {final_response[:50]}")
 
@@ -842,9 +867,30 @@ async def handle_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("\n".join(lines))
 
 
+def _retry_in_text(governor) -> str:
+    try:
+        return f"{float(governor.transport_retry_in()):.0f}"
+    except Exception:
+        return "-"
+
+
+def _is_tg_transport_error(err) -> bool:
+    """TG_TRANSPORT (M5b): сетевой сбой связи с Telegram (NetworkError/TimedOut,
+    напр. getaddrinfo failed). BadRequest в PTB -- тоже подкласс NetworkError,
+    но это содержательный отказ API (Query is too old, Message is not
+    modified) -- НЕ транспорт. InvalidToken/Forbidden -- не NetworkError и
+    остаются красными (решение Оператора 4)."""
+    from telegram.error import NetworkError
+    return isinstance(err, NetworkError) and not isinstance(err, BadRequest)
+
+
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Без обработчика исключение в команде терялось молча (аудит 06.10: /status
     падал на каждом вызове, Оператор не получал ответа вообще)."""
+    if _is_tg_transport_error(context.error):
+        # Жёлтый: связь с Telegram пропала/таймаут; ответить всё равно нечем.
+        logger.warning("[TG_TRANSPORT] %s: %s", type(context.error).__name__, context.error)
+        return
     logger.error("Unhandled exception in handler: %r", context.error, exc_info=context.error)
     msg = update.effective_message if isinstance(update, Update) else None
     if msg is not None:
@@ -901,6 +947,10 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "\n"
         "CIRCUIT BREAKER (CLOSED=норма, OPEN=отказ, HALF_OPEN=проба восстановления)\n"
         f"state: {getattr(governor, 'breaker_state', 'не подключён к governor')}\n"
+        "\n"
+        "TRANSPORT GATE (связь с Ollama; OPEN=запросы не отправляются)\n"
+        f"state: {getattr(governor, 'transport_gate_state', 'не подключён к governor')}\n"
+        f"retry_in_s: {_retry_in_text(governor)}\n"
         "\n"
         "DEGRADATION MARKERS\n"
         f"transport_failures: {state.get('transport_failures', 0)}\n"

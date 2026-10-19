@@ -25,6 +25,7 @@ from src.structural_check import check as structural_check
 from src.response_metrics import measure as measure_response
 from src.registry import Registry
 from src.circuit_breaker import BreakerState, CircuitBreaker
+from src.transport_gate import PROBE_TIMEOUT_S, TransportGate
 
 
 class LLMTransportError(RuntimeError):
@@ -225,6 +226,31 @@ class AgentGovernor:
         )
         self._probe_in_flight = False
         self._probe_lock = asyncio.Lock()
+
+        # TRANSPORT_GATE (M5a): предохранитель СВЯЗИ с Ollama, отдельный от
+        # _breaker (тот -- про качество, X3). Проверяется в _route_to_llm.
+        self._transport_gate = TransportGate(logger=logger)
+
+    @property
+    def transport_gate_state(self) -> str:
+        """TRANSPORT_GATE: CLOSED/OPEN/HALF_OPEN для /status. Только наблюдение."""
+        return self._transport_gate.state
+
+    def transport_retry_in(self) -> float:
+        """TRANSPORT_GATE: секунд до следующей пробы связи (0 -- закрыт)."""
+        return self._transport_gate.retry_in()
+
+    async def _probe_ollama(self) -> bool:
+        """TRANSPORT_GATE: дешёвая проба узла -- GET /api/version, без генерации
+        и без GPU-семафора. Любое исключение -> False."""
+        if self._http is None:
+            return False
+        url = f"http://{config.OLLAMA_HOST}:{config.OLLAMA_PORT}/api/version"
+        try:
+            response = await asyncio.wait_for(self._http.get(url), timeout=PROBE_TIMEOUT_S)
+            return getattr(response, "status_code", 0) == 200
+        except Exception:
+            return False
 
     @property
     def breaker_state(self) -> str:
@@ -1074,7 +1100,18 @@ class AgentGovernor:
         if options:
             payload["options"] = options
 
+        # TRANSPORT_GATE: при открытом предохранителе связи в Ollama не идём --
+        # сразу транспортный отказ (жёлтый LLM_UNAVAILABLE у вызывающего), без
+        # ожидания LLM_TIMEOUT и без GPU-очереди. Проверка ДО семафора.
+        gate = self._transport_gate
+        if not await gate.allow(self._probe_ollama):
+            raise LLMTransportError(
+                f"transport gate OPEN, retry in {gate.retry_in():.0f}s"
+            )
+
         async with self._gpu_limiter:
+            # Сбой считается ТОЛЬКО для запроса, реально ушедшего в Ollama:
+            # таймаут ожидания семафора (wait_for снаружи) сюда не доходит.
             try:
                 response = await self._http.post(endpoint, json=payload)
                 response.raise_for_status()
@@ -1083,20 +1120,31 @@ class AgentGovernor:
                 status = getattr(e.response, "status_code", None)
                 if isinstance(status, int) and status >= 500:
                     # транспорт -> жёлтый (WARNING), не считается watchdog'ом
+                    gate.record_failure(f"HTTP {status}")
                     logger.warning("LLM HTTP error (transport, status=%s): %s", status, e)
                     raise LLMTransportError("LLM provider failed (5xx)") from e
+                gate.record_success()  # 4xx: узел жив, отказ содержательный
                 logger.error("LLM HTTP error: %s", e)
                 raise LLMContentError("LLM provider rejected request") from e
             except httpx.TimeoutException as e:
+                gate.record_failure("timeout")
                 logger.warning("LLM timeout: %s", e)
                 raise LLMTimeoutError("LLM provider timed out") from e
             except httpx.RequestError as e:
+                gate.record_failure(type(e).__name__)
                 logger.warning("LLM connection error: %s", e)
                 raise LLMTransportError("LLM provider unreachable") from e
             except ValueError as e:  # json decode failure
+                gate.record_success()  # ответ получен, узел жив
                 logger.error("LLM returned non-JSON body: %s", e)
                 raise LLMContentError("LLM provider returned malformed response") from e
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                # wait_for истёк, пока запрос был В ПОЛЁТЕ (узел завис) --
+                # транспортный сбой узла; исключение пробрасывается как есть.
+                gate.record_failure("timed out in flight")
+                raise
 
+        gate.record_success()
         if "response" not in data:
             raise LLMContentError(f"Unexpected response schema: {list(data.keys())}")
 
