@@ -9,6 +9,7 @@ import logging
 import sqlite3
 import asyncio
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -21,6 +22,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -37,6 +39,8 @@ from src.monitor import ComplianceEvent, ComplianceMonitor
 from src.staging_manager import StagingManager
 from src.staging_repository import StagingRepository
 import knowledge_indexer
+import sleep_digest
+import layout_fix
 
 # --- Унификация RAG-контура с console_chat.py (устранение Split Brain) ---
 # knowledge_indexer.py (импортирован строкой выше) уже добавляет oko_rag/ в
@@ -64,7 +68,9 @@ logger = oko_logger.get_logger("bot")
 # токен оседает в логе при каждом опросе (раз в ~10 с) и утекает вместе с
 # любым фрагментом лога, который кто-то покажет или отправит. Ошибки
 # (WARNING и выше) по-прежнему пишутся.
-for _noisy_logger in ("httpx", "httpcore"):
+# apscheduler: 2 строки INFO на каждый запуск job (staging каждые 10 с -> ~17 тыс. строк/сутки)
+# топили реальные события в логе; пропуски и сбои job он пишет WARNING/ERROR -- они остаются.
+for _noisy_logger in ("httpx", "httpcore", "apscheduler"):
     logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
 
 HISTORY_LIMIT = 10  # последних сообщений (5 пар вопрос-ответ)
@@ -623,6 +629,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     logger.info(f"Processing message from {user_id}: len={len(text)}")
 
+    # LAYOUT_FIX (24.10): текст не в той раскладке ("ghbdtn", "зкшмуе") исправляется
+    # до фильтра, памяти и модели; пользователь видит, как бот понял. Текст в лог не пишется.
+    layout_note = ""
+    fix = layout_fix.normalize(text)
+    if fix.kind:
+        logger.info("[LAYOUT_FIX] kind=%s words=%d len=%d", fix.kind, fix.words_fixed, len(text))
+        text = fix.text
+        layout_note = f"(понял как: «{fix.text[:80]}»)\n"
+
     governor: AgentGovernor = context.application.bot_data["governor"]
     dispatcher = context.application.bot_data["dispatcher"]
     input_monitor: ComplianceMonitor = context.application.bot_data["input_monitor"]
@@ -638,7 +653,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("[ERR: SYSTEM_FAULT]")
         return
 
-    clean_response = core.clean_output(_explain_for_user(governor, raw_response))
+    clean_response = layout_note + core.clean_output(_explain_for_user(governor, raw_response))
     final_response = core.format_final(clean_response[:MAX_MSG_LEN - len(core.name) - 4])
     logger.info(f"Response routed to {user_id}: {final_response[:50]}")
 
@@ -925,6 +940,8 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         else "active_discuss: none"
     )
 
+    sleep_text = await asyncio.to_thread(_sleep_status_text)
+
     report = (
         "KERNEL STATUS\n"
         f"status: {state['status']}\n"
@@ -951,6 +968,9 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "TRANSPORT GATE (связь с Ollama; OPEN=запросы не отправляются)\n"
         f"state: {getattr(governor, 'transport_gate_state', 'не подключён к governor')}\n"
         f"retry_in_s: {_retry_in_text(governor)}\n"
+        "\n"
+        "SLEEP (M7: сводка лога + дрейф; только наблюдение, порогов нет)\n"
+        f"{sleep_text}\n"
         "\n"
         "DEGRADATION MARKERS\n"
         f"transport_failures: {state.get('transport_failures', 0)}\n"
@@ -1376,6 +1396,64 @@ async def heartbeat_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     heartbeat_file.touch()
 
 
+# --- M7.1/M7.2 «сон» (SLEEP_CYCLE, 20.10) ---
+# Простой = нет апдейтов от админов >= SLEEP_IDLE_S и TransportGate CLOSED;
+# не чаще SLEEP_MIN_INTERVAL_S (время последней сводки берётся из ops.db,
+# переживает рестарт). Без LLM и без записи в знания/память: читает лог
+# (config.OKO_LOG_FILE) и пишет одну строку в ops.db. Сбой -> WARNING
+# [SLEEP_FAIL] (не ERROR: наблюдение не должно краснить светофор).
+# Состояние модуля, как _notified_uuids: при рестарте простой считается заново.
+_sleep_state: dict = {"last_activity": time.time(), "last_attempt": None, "disabled_logged": False}
+
+
+async def _touch_activity(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """group=-1: отмечает активность только админов (посторонний спам не
+    должен откладывать сон). Не останавливает обработку в группе 0."""
+    user = getattr(update, "effective_user", None)
+    if user is not None and user.id in config.ADMIN_USER_IDS:
+        _sleep_state["last_activity"] = time.time()
+
+
+def _sleep_status_text() -> str:
+    try:
+        line = sleep_digest.status_line(config.OPS_DB_PATH)
+    except Exception as e:
+        line = f"SLEEP: ошибка чтения ops.db ({type(e).__name__})"
+    idle_min = (time.time() - _sleep_state["last_activity"]) / 60.0
+    log_src = "задан" if config.OKO_LOG_FILE else "НЕ ЗАДАН (OKO_LOG_FILE) -> сон выключен"
+    return f"{line}\nidle_min: {idle_min:.0f}\nlog: {log_src}"
+
+
+async def sleep_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    if config.OKO_LOG_FILE is None:
+        if not _sleep_state["disabled_logged"]:
+            logger.info("[SLEEP] disabled: OKO_LOG_FILE not set")
+            _sleep_state["disabled_logged"] = True
+        return
+    governor = context.application.bot_data["governor"]
+    try:
+        db_last = await asyncio.to_thread(sleep_digest.last_sleep_ts, config.OPS_DB_PATH)
+    except Exception as e:
+        logger.warning("[SLEEP_FAIL] ops.db read: %s: %s", type(e).__name__, e)
+        return
+    marks = [t for t in (db_last, _sleep_state["last_attempt"]) if t is not None]
+    ok, reason = sleep_digest.should_sleep(
+        time.time(), _sleep_state["last_activity"], max(marks) if marks else None,
+        getattr(governor, "transport_gate_state", "UNKNOWN"),
+        config.SLEEP_IDLE_S, config.SLEEP_MIN_INTERVAL_S,
+    )
+    if not ok:
+        logger.debug("[SLEEP] skip: %s", reason)
+        return
+    _sleep_state["last_attempt"] = time.time()  # до await: повторный тик не войдёт
+    try:
+        res = await asyncio.to_thread(sleep_digest.run_once, config.OKO_LOG_FILE, config.OPS_DB_PATH)
+        if res.get("status") == "no_new_lines":
+            logger.info("[SLEEP_DIGEST] no new log lines (rotated=%s)", res.get("rotated"))
+    except Exception as e:
+        logger.warning("[SLEEP_FAIL] %s: %s", type(e).__name__, e)
+
+
 STARTUP_BACKOFF_CAP_S = 30.0
 
 
@@ -1513,6 +1591,7 @@ def main():
     app.bot_data["input_monitor"] = input_monitor
     app.bot_data["staging_manager"] = staging_manager
 
+    app.add_handler(TypeHandler(Update, _touch_activity), group=-1)
     app.add_handler(CommandHandler("status", handle_status))
     app.add_handler(CommandHandler("memory", handle_memory))
     app.add_error_handler(on_error)
@@ -1553,6 +1632,12 @@ def main():
     # случайной задержки одного тика).
     app.job_queue.run_repeating(heartbeat_job, interval=30.0, first=0.0)
     app.job_queue.run_repeating(memory_ttl_job, interval=6 * 3600, first=60.0)
+    # M7 сон: тик раз в SLEEP_CHECK_INTERVAL_S; решение — в sleep_cycle_job.
+    app.job_queue.run_repeating(
+        sleep_cycle_job,
+        interval=config.SLEEP_CHECK_INTERVAL_S,
+        first=config.SLEEP_CHECK_INTERVAL_S,
+    )
 
     logger.info("Все системы верифицированы. Контур исполнения запущен.")
     app.run_polling()

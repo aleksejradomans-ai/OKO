@@ -232,3 +232,14 @@ IO_RETRY_BASE_DELAY_S: float = _get_env_float(
 # Ядро памяти: отдельно от knowledge_base.db
 MEMORY_DB_PATH: Path = BASE_DIR / "memory" / "memory.db"
 MEMORY_BACKUP_DIR: Path = BASE_DIR / "memory" / "backups"
+
+# --- M7.1/M7.2 «сон»: сводка лога и индекс дрейфа (только наблюдение) ---
+# ops.db — служебная БД, отдельно от знаний и памяти (решение 6, 19.10).
+OPS_DB_PATH: Path = BASE_DIR / "ops.db"
+# Лог OkoBot = файл NSSM AppStderr (logger.py пишет только в stderr).
+# Пусто -> сон выключен (одна INFO-строка при первом тике), бот работает.
+_OKO_LOG_FILE_RAW = os.getenv("OKO_LOG_FILE", "").strip()
+OKO_LOG_FILE: "Path | None" = Path(_OKO_LOG_FILE_RAW) if _OKO_LOG_FILE_RAW else None
+SLEEP_IDLE_S: float = _get_env_float("SLEEP_IDLE_S", 20 * 60.0)
+SLEEP_MIN_INTERVAL_S: float = _get_env_float("SLEEP_MIN_INTERVAL_S", 6 * 3600.0)
+SLEEP_CHECK_INTERVAL_S: float = _get_env_float("SLEEP_CHECK_INTERVAL_S", 300.0)

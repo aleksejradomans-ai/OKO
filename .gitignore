@@ -45,3 +45,11 @@ oko_rag/chroma_db.*/
 *.OTHER.py
 _quarantine_*/
 eval/judge_variants_result.json
+# local artifacts (2026-10-24)
+diag_*.txt
+*_report.txt
+.tmp.drivedownload/
+_backup_rag_*/
+export_public.py
+sync_public.py
+import_graph.py
