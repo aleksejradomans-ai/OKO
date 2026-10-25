@@ -273,3 +273,102 @@ def test_no_llm_network_or_knowledge_imports():
                     "db", "memory_core", "governor", "bot"):
             assert f"\nimport {bad}\n" not in src and f"\nfrom {bad} import" not in src
         assert "sqlite3.connect(self.db_path" in Path(ops_db.__file__).read_text(encoding="utf-8")
+
+
+# --- [VECTOR_S] (метрика S, только наблюдение) ----------------------------------
+VS_LIVE = ("[VECTOR_S] point=B s_identity=0.560 s_manifest=0.437 id=346e1128 "
+           "man=c14d5e55 trunc=0 ms=4375")
+
+
+def vs_msg(si, sm, idh="346e1128", man="c14d5e55", trunc=0, ms=200):
+    return (f"[VECTOR_S] point=B s_identity={si:.3f} s_manifest={sm:.3f} id={idh} "
+            f"man={man} trunc={trunc} ms={ms}")
+
+
+def test_parse_vector_s_live_line_and_kinds():
+    p = sd.parse_vector_s(VS_LIVE)
+    assert p == {"kind": "point", "point": "B", "s_identity": 0.56, "s_manifest": 0.437,
+                 "trunc": False, "ms": 4375.0, "core": "346e1128:c14d5e55"}
+    assert sd.parse_vector_s("[VECTOR_S] core rebuilt id=346e1128 man=c14d5e55 model=bge-m3") \
+        == {"kind": "rebuild"}
+    assert sd.parse_vector_s("[VECTOR_S] point=B fail=TimeoutError after=3.0s") \
+        == {"kind": "fail", "point": "B", "type": "TimeoutError"}
+    assert sd.parse_vector_s("[VECTOR_S] point=B fail=<bad>type")["type"] == "?"
+    assert sd.parse_vector_s("[METRICS] point=B") is None
+
+
+@pytest.mark.parametrize("msg", [
+    "[VECTOR_S] point=B s_identity=0.5",                       # нет s_manifest
+    "[VECTOR_S] point=B s_identity=x s_manifest=0.4",          # не число
+    "[VECTOR_S] point=B s_identity=nan s_manifest=0.4",        # не конечное
+    "[VECTOR_S] point=B s_identity=1.5 s_manifest=0.4",        # вне [-1, 1]
+    "[VECTOR_S] point=B s_identity=0.5 s_manifest=0.4 trunc=y",
+])
+def test_parse_vector_s_bad(msg):
+    assert sd.parse_vector_s(msg) is None
+
+
+def test_digest_vector_s_mean_std_fail_rebuild_separate():
+    lines = [
+        ln(T0, "INFO", "src.governor", "[VECTOR_S] core rebuilt id=346e1128 man=c14d5e55 model=bge-m3"),
+        ln(T0, "INFO", "src.governor", vs_msg(0.5, 0.4, ms=4000)),
+        ln(T0, "INFO", "src.governor", vs_msg(0.6, 0.4, trunc=1, ms=200)),
+        ln(T0, "INFO", "src.governor", vs_msg(0.7, 0.4, ms=100)),
+        ln(T0, "WARNING", "src.governor", "[VECTOR_S] point=B fail=TimeoutError"),
+        ln(T0, "WARNING", "src.governor", "[VECTOR_S] point=B fail=QueueBusy"),
+        ln(T0, "INFO", "src.governor", "[VECTOR_S] point=B s_identity=oops s_manifest=1"),
+    ]
+    d = sd.build_digest(lines)
+    v = d["vector_s"]
+    assert v["n"] == 3 and v["bad"] == 1 and v["rebuilt"] == 1 and v["trunc"] == 1
+    assert v["fails"] == 2 and v["fail"] == {"TimeoutError": 1, "QueueBusy": 1}
+    assert v["points"] == {"B": 3} and v["core_changed"] is False
+    si, sm = v["summary"]["s_identity"], v["summary"]["s_manifest"]
+    assert si["mean"] == 0.6 and abs(si["std"] - 0.0816) < 1e-4
+    assert si["min"] == 0.5 and si["max"] == 0.7
+    assert sm["mean"] == 0.4 and sm["std"] == 0.0
+    assert v["ms_p50"] == 200.0 and v["ms_max"] == 4000.0
+    assert d["tags"]["VECTOR_S"] == 7
+    assert d["metrics"]["n"] == 0 and d["metrics"]["bad"] == 0  # не смешивается с M6
+
+
+def test_vector_s_empty_and_single():
+    v0 = sd.build_digest([ln(T0, "INFO", "g", metrics_msg())])["vector_s"]
+    assert v0["n"] == 0 and v0["summary"]["s_identity"] == \
+        {"mean": None, "std": None, "min": None, "max": None}
+    assert v0["ms_p50"] is None and v0["core_changed"] is False
+    v1 = sd.build_digest([ln(T0, "INFO", "g", VS_LIVE)])["vector_s"]
+    assert v1["n"] == 1 and v1["summary"]["s_identity"]["mean"] == 0.56
+    assert v1["summary"]["s_identity"]["std"] is None
+
+
+def test_vector_s_only_fails():
+    v = sd.build_digest([ln(T0, "WARNING", "g", "[VECTOR_S] point=B fail=ConnectError")] * 3)["vector_s"]
+    assert v["n"] == 0 and v["fails"] == 3 and v["summary"]["s_manifest"]["mean"] is None
+
+
+def test_vector_s_core_change_flagged():
+    v = sd.build_digest([ln(T0, "INFO", "g", vs_msg(0.5, 0.4)),
+                         ln(T0, "INFO", "g", vs_msg(0.5, 0.4, idh="deadbeef")),
+                         ln(T0, "INFO", "g", vs_msg(0.5, 0.4, man="NOTHEX!!"))])["vector_s"]
+    assert v["core_changed"] is True
+    assert v["cores"] == {"346e1128:c14d5e55": 1, "deadbeef:c14d5e55": 1, "346e1128:?": 1}
+
+
+def test_vector_s_fail_tail_not_stored():
+    d = sd.build_digest([ln(T0, "WARNING", "g",
+                            "[VECTOR_S] point=B fail=HTTPStatusError err=пароль hunter2")])
+    blob = json.dumps(d, ensure_ascii=False)
+    assert "hunter2" not in blob and "пароль" not in blob
+    assert d["vector_s"]["fail"] == {"HTTPStatusError": 1}
+
+
+def test_vector_s_not_in_drift_and_persisted(paths):
+    logf, opsf = paths
+    write(logf, day_lines(0, 5) + [ln(T0, "INFO", "g", vs_msg(0.5 + 0.01 * i, 0.4)) for i in range(4)],
+          mode="w")
+    res = sd.run_once(logf, opsf)
+    assert res["status"] == "written" and res["digest"]["metrics"]["n"] == 5
+    assert "vector_s" not in sd.DRIFT_KEYS and "s_identity" not in sd.DRIFT_KEYS
+    stored = OpsDB(opsf).last_digest().payload["vector_s"]
+    assert stored["n"] == 4 and stored["summary"]["s_identity"]["mean"] == 0.515

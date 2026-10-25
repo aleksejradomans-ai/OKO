@@ -243,3 +243,7 @@ OKO_LOG_FILE: "Path | None" = Path(_OKO_LOG_FILE_RAW) if _OKO_LOG_FILE_RAW else 
 SLEEP_IDLE_S: float = _get_env_float("SLEEP_IDLE_S", 20 * 60.0)
 SLEEP_MIN_INTERVAL_S: float = _get_env_float("SLEEP_MIN_INTERVAL_S", 6 * 3600.0)
 SLEEP_CHECK_INTERVAL_S: float = _get_env_float("SLEEP_CHECK_INTERVAL_S", 300.0)
+
+# --- Метрика S (векторный маркер): только наблюдение, порогов нет ---
+# OKO_VECTOR_S=0 -> выключено (откат без правки кода). Модель -- OLLAMA_EMBED_MODEL.
+VECTOR_S_ENABLED: bool = os.getenv("OKO_VECTOR_S", "1").strip().lower() not in ("0", "false", "no", "off")

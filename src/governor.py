@@ -26,6 +26,7 @@ from src.response_metrics import measure as measure_response
 from src.registry import Registry
 from src.circuit_breaker import BreakerState, CircuitBreaker
 from src.transport_gate import PROBE_TIMEOUT_S, TransportGate
+from src.vector_marker import VectorMarker
 
 
 class LLMTransportError(RuntimeError):
@@ -231,6 +232,16 @@ class AgentGovernor:
         # _breaker (тот -- про качество, X3). Проверяется в _route_to_llm.
         self._transport_gate = TransportGate(logger=logger)
 
+        # VECTOR_S (метрика S): только наблюдение, фоновая задача после ответа.
+        # Включается в start() и только для собственного клиента (боевой путь):
+        # тесты с инжектированным моком не получают лишних POST в мок.
+        self._vector_marker = VectorMarker(
+            self.identity_text, self.manifesto, self._embed_for_marker, logger,
+            gpu=self._gpu_limiter, model=config.OLLAMA_EMBED_MODEL,
+        )
+        self._vector_s_on = False
+        self._bg_tasks: set = set()
+
     @property
     def transport_gate_state(self) -> str:
         """TRANSPORT_GATE: CLOSED/OPEN/HALF_OPEN для /status. Только наблюдение."""
@@ -285,6 +296,7 @@ class AgentGovernor:
         if self._http is None:
             self._http = httpx.AsyncClient(timeout=config.LLM_TIMEOUT)
             self._is_managed_client = True
+        self._vector_s_on = bool(config.VECTOR_S_ENABLED and self._is_managed_client)
         logger.info("Governor HTTP client started.")
 
     async def shutdown(self) -> None:
@@ -301,6 +313,12 @@ class AgentGovernor:
         циклами на одном моке инжектируйте клиент повторно перед каждым
         start(), либо не вызывайте shutdown() между сценариями теста.
         """
+        self._vector_s_on = False
+        pending = [t for t in self._bg_tasks if not t.done()]
+        for t in pending:
+            t.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         if self._is_managed_client and self._http is not None:
             await self._http.aclose()
         self._http = None
@@ -411,6 +429,7 @@ class AgentGovernor:
         if not is_service_marker(final):
             self._observe_structure(final, point="B", question=user_input)
             self._observe_metrics(final, point="B")
+            self._observe_vector(final, point="B")
         return final
 
     def _observe_structure(self, text: str, point: str, question: str = "") -> None:
@@ -439,6 +458,39 @@ class AgentGovernor:
             logger.info("[METRICS] point=%s %s", point, measure_response(text).to_log())
         except Exception as e:
             logger.warning("[METRICS_FAIL] point=%s %s: %s", point, type(e).__name__, e)
+
+    def _observe_vector(self, text: str, point: str) -> None:
+        """VECTOR_S: ставит замер S фоновой задачей и сразу возвращается --
+        таймаут эмбеддинга не входит в задержку ответа. Пропуск без лога, если
+        метрика выключена или связь с Ollama не CLOSED (не стучимся в упавший узел)."""
+        # getattr: тесты строят governor через __new__ без __init__.
+        if not getattr(self, "_vector_s_on", False) or self._http is None or not text:
+            return
+        if self._transport_gate.state != "CLOSED":
+            return
+        try:
+            task = asyncio.get_running_loop().create_task(self._vector_marker.observe(text, point))
+        except Exception as e:
+            logger.warning("[VECTOR_S] point=%s fail=%s %s", point, type(e).__name__, e)
+            return
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    async def _embed_for_marker(self, text: str) -> list:
+        """VECTOR_S: эмбеддинг через общий httpx-клиент, тот же эндпоинт и модель,
+        что у индексатора (/api/embeddings, OLLAMA_EMBED_MODEL). Мимо TransportGate:
+        ни record_failure, ни record_success (F1). Таймаут и семафор -- в VectorMarker."""
+        if self._http is None:
+            raise RuntimeError("governor not started")
+        url = f"http://{config.OLLAMA_HOST}:{config.OLLAMA_PORT}/api/embeddings"
+        response = await self._http.post(
+            url, json={"model": config.OLLAMA_EMBED_MODEL, "prompt": text}
+        )
+        response.raise_for_status()
+        vector = response.json().get("embedding")
+        if not vector:
+            raise ValueError("empty embedding")
+        return vector
 
     async def execute_discuss_request(
         self,

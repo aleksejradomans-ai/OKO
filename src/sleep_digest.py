@@ -6,11 +6,13 @@
 
 Приватность: в сводку не попадает текст сообщений. Хранятся только счётчики
 уровней, служебные теги в НАЧАЛЕ сообщения ([TAG] ...), коды [ERR: X] и
-числа из строк [METRICS] (M6).
+числа из строк [METRICS] (M6) и [VECTOR_S] (метрика S). Из [VECTOR_S]
+берутся только числа, hash8 опор и тип сбоя; хвост WARNING не хранится.
 
 Дрейф: drift_score = среднее |z| по ce, ad, rl, cjk, log(len+1) окна
 (>= DRIFT_WINDOW_MIN ответов) против замороженной базы (первые
 BASELINE_DAYS дней и >= BASELINE_MIN_SAMPLES ответов). Порогов-решений нет.
+[VECTOR_S] в дрейф не входит: только агрегат vector_s в payload (наблюдение).
 
 Ручной запуск (до подключения к JobQueue):
     python src\\sleep_digest.py --log <путь AppStderr> --dry-run
@@ -57,6 +59,10 @@ _ERR_RE = re.compile(r"\[ERR:\s*([A-Z][A-Z0-9_]{1,39})\]")
 _KV_RE = re.compile(r"([a-z_]+)=(\S+)")
 _INTENT_RE = re.compile(r"^([a-z_]+)\(([-0-9.]+)\)$")
 _METRIC_NUM = ("ce", "ad", "rl", "cyr", "lat", "cjk", "len")
+_VS_NUM = ("s_identity", "s_manifest")
+_HASH8_RE = re.compile(r"^[0-9a-f]{8}$")
+_FAIL_TYPE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,39}$")
+VS_TOP_CORES = 10
 
 
 # --- чтение лога ---------------------------------------------------------------
@@ -153,6 +159,50 @@ def parse_metrics(message: str) -> Optional[dict]:
     return out
 
 
+def parse_vector_s(message: str) -> Optional[dict]:
+    """Строки метрики S (vector_marker):
+      '[VECTOR_S] point=B s_identity=0.560 s_manifest=0.437 id=<h8> man=<h8> trunc=0 ms=4375'
+      '[VECTOR_S] core rebuilt id=<h8> man=<h8> model=bge-m3'
+      '[VECTOR_S] point=B fail=<Тип> ...'
+    -> {"kind": "point"|"rebuild"|"fail", ...} или None (битая строка).
+    Хвост сообщения не сохраняется; тип сбоя вне [A-Za-z0-9_] -> '?'."""
+    if not message.startswith("[VECTOR_S]"):
+        return None
+    body = message[len("[VECTOR_S]"):].strip()
+    kv = dict(_KV_RE.findall(body))
+    point = kv.get("point", "?")
+    if body.startswith("core rebuilt"):
+        return {"kind": "rebuild"}
+    if "fail" in kv:
+        ft = kv["fail"]
+        return {"kind": "fail", "point": point, "type": ft if _FAIL_TYPE_RE.match(ft) else "?"}
+    out: dict = {"kind": "point", "point": point}
+    try:
+        for k in _VS_NUM:
+            x = float(kv[k])
+            if not math.isfinite(x) or not -1.0 <= x <= 1.0:
+                return None
+            out[k] = x
+        out["trunc"] = int(kv.get("trunc", "0")) == 1
+        ms = float(kv["ms"]) if "ms" in kv else None
+    except (KeyError, ValueError):
+        return None
+    out["ms"] = ms if ms is not None and math.isfinite(ms) and ms >= 0 else None
+    h_id, h_man = kv.get("id", ""), kv.get("man", "")
+    out["core"] = (f"{h_id if _HASH8_RE.match(h_id) else '?'}:"
+                   f"{h_man if _HASH8_RE.match(h_man) else '?'}")
+    return out
+
+
+def _summary(st: dict) -> dict:
+    """mean/std(популяционное)/min/max; std=None при n<2, всё None при n=0."""
+    if not st["n"]:
+        return {"mean": None, "std": None, "min": None, "max": None}
+    mean, std = _mean_std(st)
+    return {"mean": round(mean, 4), "std": round(std, 4) if st["n"] >= 2 else None,
+            "min": st["min"], "max": st["max"]}
+
+
 def _stat_add(st: dict, x: float) -> None:
     st["n"] += 1
     st["sum"] += x
@@ -174,6 +224,12 @@ def build_digest(lines: Iterable[str]) -> dict:
     stats = {k: _empty_stat() for k in _METRIC_NUM + ("len_log",)}
     share = {"cjk_pos": 0, "ad_low": 0, "rl_pos": 0}
     total = unparsed = bad_metrics = 0
+    vs_stats = {k: _empty_stat() for k in _VS_NUM}
+    vs_points: Counter = Counter()
+    vs_fail: Counter = Counter()
+    vs_cores: Counter = Counter()
+    vs_ms: List[float] = []
+    vs_rebuilt = vs_trunc = vs_bad = 0
     t_first = t_last = None
 
     for line in lines:
@@ -191,6 +247,23 @@ def build_digest(lines: Iterable[str]) -> dict:
             tags[tm.group(1)] += 1
         for code in _ERR_RE.findall(msg):
             errs[code] += 1
+        if tm and tm.group(1) == "VECTOR_S":
+            vs = parse_vector_s(msg)
+            if vs is None:
+                vs_bad += 1
+            elif vs["kind"] == "rebuild":
+                vs_rebuilt += 1
+            elif vs["kind"] == "fail":
+                vs_fail[vs["type"]] += 1
+            else:
+                vs_points[vs["point"]] += 1
+                vs_cores[vs["core"]] += 1
+                vs_trunc += vs["trunc"]
+                for k in _VS_NUM:
+                    _stat_add(vs_stats[k], vs[k])
+                if vs["ms"] is not None:
+                    vs_ms.append(vs["ms"])
+            continue
         if tm and tm.group(1) == "METRICS":
             mt = parse_metrics(msg)
             if mt is None:
@@ -216,6 +289,16 @@ def build_digest(lines: Iterable[str]) -> dict:
         "err_codes": dict(errs.most_common(TOP_ERR)),
         "metrics": {"n": stats["ce"]["n"], "bad": bad_metrics, "points": dict(points),
                     "intent": dict(intents), "share": share, "stats": stats},
+        "vector_s": {
+            "n": vs_stats["s_identity"]["n"], "bad": vs_bad,
+            "fails": sum(vs_fail.values()), "fail": dict(vs_fail),
+            "rebuilt": vs_rebuilt, "trunc": vs_trunc, "points": dict(vs_points),
+            "cores": dict(vs_cores.most_common(VS_TOP_CORES)), "core_changed": len(vs_cores) > 1,
+            "summary": {k: _summary(vs_stats[k]) for k in _VS_NUM},
+            "ms_p50": (round(sorted(vs_ms)[len(vs_ms) // 2], 1) if vs_ms else None),
+            "ms_max": (max(vs_ms) if vs_ms else None),
+            "stats": vs_stats,
+        },
     }
 
 
