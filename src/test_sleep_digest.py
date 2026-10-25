@@ -372,3 +372,139 @@ def test_vector_s_not_in_drift_and_persisted(paths):
     assert "vector_s" not in sd.DRIFT_KEYS and "s_identity" not in sd.DRIFT_KEYS
     stored = OpsDB(opsf).last_digest().payload["vector_s"]
     assert stored["n"] == 4 and stored["summary"]["s_identity"]["mean"] == 0.515
+
+
+# --- [CTX] / [DEPTH] (этап 1 рубежа погружения) ---------------------------------
+def ctx_line(call="main", pe="1213", ev="16", nctx="4096", fill="0.296", chars="3359"):
+    return f"[CTX] call={call} pe={pe} ev={ev} nctx={nctx} fill={fill} chars={chars}"
+
+
+def test_parse_ctx_live_line_and_dashes():
+    assert sd.parse_ctx(ctx_line()) == {"call": "main", "pe": 1213.0, "ev": 16.0,
+                                        "nctx": 4096.0, "fill": 0.296, "chars": 3359.0}
+    p = sd.parse_ctx(ctx_line(pe="-", fill="-"))
+    assert p["pe"] is None and p["fill"] is None and p["call"] == "main"
+    assert sd.parse_ctx("[DEPTH] turns=1 active_s=0.0 span_s=0.0") is None
+    assert sd.parse_ctx(ctx_line(fill="nan"))["fill"] is None
+
+
+def test_parse_depth_and_bad():
+    assert sd.parse_depth("[DEPTH] turns=3 active_s=120.5 span_s=120.5 pause_s=2400") == {
+        "turns": 3, "active_s": 120.5, "span_s": 120.5}
+    assert sd.parse_depth("[DEPTH] turns=x active_s=1 span_s=1") is None
+    assert sd.parse_depth("[CTX] call=main") is None
+
+
+def test_digest_ctx_by_call_fill_overflow_counted():
+    lines = [
+        ln(T0, "INFO", "kernel.governor", ctx_line(call="main", fill="0.30", pe="1200")),
+        ln(T0, "INFO", "kernel.governor", ctx_line(call="main", fill="0.95", pe="3900")),
+        ln(T0, "INFO", "kernel.governor", ctx_line(call="judge", fill="0.11", pe="450")),
+        ln(T0, "INFO", "kernel.governor", ctx_line(call="main", fill="-", pe="-")),  # счёт n, fill/pe None
+        ln(T0, "INFO", "kernel.governor", "[CTX] call=main pe=oops"),  # лениво: n+1, числа None
+    ]
+    d = sd.build_digest(lines)
+    cx = d["ctx"]
+    main = cx["calls"]["main"]
+    assert main["n"] == 4 and main["fill_ge_090"] == 1  # fill есть только у 2 строк
+    assert main["fill"]["mean"] == 0.625 and main["fill"]["max"] == 0.95
+    assert main["pe"]["max"] == 3900.0
+    assert cx["calls"]["judge"]["n"] == 1 and cx["calls"]["judge"]["fill_ge_090"] == 0
+    assert d["tags"]["CTX"] == 5
+    assert d["metrics"]["n"] == 0  # [CTX] не путается с M6
+
+
+def test_digest_depth_aggregate_and_empty():
+    lines = [ln(T0, "INFO", "bot", "[DEPTH] turns=2 active_s=100.0 span_s=100.0 pause_s=2400"),
+             ln(T0, "INFO", "bot", "[DEPTH] turns=5 active_s=300.0 span_s=900.0 pause_s=2400"),
+             ln(T0, "INFO", "bot", "[DEPTH] turns=bad")]
+    d = sd.build_digest(lines)
+    dp = d["depth"]
+    assert dp["n"] == 2 and dp["bad"] == 1
+    assert dp["turns"]["max"] == 5 and dp["turns"]["min"] == 2
+    assert dp["active_s"]["max"] == 300.0 and dp["span_s"]["max"] == 900.0
+    empty = sd.build_digest([ln(T0, "INFO", "g", metrics_msg())])
+    assert empty["ctx"] == {"calls": {}}
+    assert empty["depth"]["n"] == 0 and empty["depth"]["turns"]["mean"] is None
+
+
+def test_ctx_depth_persisted_and_not_in_drift(paths):
+    logf, opsf = paths
+    write(logf, day_lines(0, 3) + [
+        ln(T0, "INFO", "kernel.governor", ctx_line()),
+        ln(T0, "INFO", "bot", "[DEPTH] turns=3 active_s=50.0 span_s=50.0 pause_s=2400")], mode="w")
+    res = sd.run_once(logf, opsf)
+    assert res["status"] == "written"
+    pl = OpsDB(opsf).last_digest().payload
+    assert pl["ctx"]["calls"]["main"]["n"] == 1 and pl["depth"]["n"] == 1
+    assert "ctx" not in sd.DRIFT_KEYS and "depth" not in sd.DRIFT_KEYS
+
+
+# --- [EPOCH] (M7.3 /newepoch, D7: только отметка) --------------------------------
+def test_parse_epoch_live_line_and_bad():
+    assert sd.parse_epoch("[EPOCH] new ts=1792922418.0") == 1792922418.0
+    for bad in ("[EPOCH] new ts=x", "[EPOCH] new", "[EPOCH] new ts=nan",
+                "[EPOCH] new ts=-5", "[EPOCH] fail=OperationalError", "[DEPTH] turns=1"):
+        assert sd.parse_epoch(bad) is None
+
+
+def test_digest_epoch_count_last_and_bad():
+    lines = [ln(T0, "INFO", "bot", "[EPOCH] new ts=1792922418.0"),
+             ln(T0, "INFO", "bot", "[EPOCH] new ts=1792922814.0"),
+             ln(T0, "ERROR", "bot", "[EPOCH] fail=OperationalError disk"),
+             ln(T0, "INFO", "g", metrics_msg())]
+    d = sd.build_digest(lines)
+    assert d["epoch"] == {"n": 2, "bad": 1, "last_ts": 1792922814.0}
+    assert d["tags"]["EPOCH"] == 3 and d["metrics"]["n"] == 1
+    assert "disk" not in json.dumps(d, ensure_ascii=False)
+    assert sd.build_digest([ln(T0, "INFO", "g", metrics_msg())])["epoch"] == \
+        {"n": 0, "bad": 0, "last_ts": None}
+
+
+def test_epoch_persisted_not_in_drift_baseline_kept(paths):
+    logf, opsf = paths
+    write(logf, day_lines(0, 3) + [ln(T0, "INFO", "bot", "[EPOCH] new ts=1792922418.0")], mode="w")
+    res = sd.run_once(logf, opsf)
+    assert res["status"] == "written"
+    assert OpsDB(opsf).last_digest().payload["epoch"]["n"] == 1
+    assert "epoch" not in sd.DRIFT_KEYS
+    assert res["digest"]["metrics"]["n"] == 3  # эпоха не трогает M6/дрейф
+
+
+# --- [RAG_HYGIENE] (M7.4: только числа, последний скан за окно) ------------------
+RAG_LINE = "[RAG_HYGIENE] rows=12 missing=0 partial=1 orphans=2 orphan_chunks=9 no_hash=0"
+
+
+def test_parse_rag_kinds_and_bad():
+    assert sd.parse_rag(RAG_LINE) == {"kind": "scan", "rows": 12, "missing": 0, "partial": 1,
+                                      "orphans": 2, "orphan_chunks": 9, "no_hash": 0}
+    assert sd.parse_rag("[RAG_HYGIENE] skip=unavailable") == {"kind": "skip"}
+    assert sd.parse_rag("[RAG_HYGIENE] fail=TimeoutError") == {"kind": "fail", "type": "TimeoutError"}
+    assert sd.parse_rag("[RAG_HYGIENE] fail=<x>")["type"] == "?"
+    for bad in ("[RAG_HYGIENE] rows=12", "[RAG_HYGIENE] rows=x missing=0 partial=0 orphans=0 "
+                "orphan_chunks=0 no_hash=0", RAG_LINE.replace("orphans=2", "orphans=-1")):
+        assert sd.parse_rag(bad) is None
+    assert sd.parse_rag("[EPOCH] new ts=1") is None
+
+
+def test_digest_rag_last_scan_fails_skips():
+    lines = [ln(T0, "INFO", "bot", RAG_LINE.replace("orphans=2", "orphans=5")),
+             ln(T0, "WARNING", "bot", "[RAG_HYGIENE] fail=TimeoutError tail=secret"),
+             ln(T0, "INFO", "bot", "[RAG_HYGIENE] skip=unavailable"),
+             ln(T0, "INFO", "bot", RAG_LINE),
+             ln(T0, "INFO", "bot", "[RAG_HYGIENE] rows=oops")]
+    r = sd.build_digest(lines)["rag"]
+    assert r["n"] == 2 and r["bad"] == 1 and r["skip"] == 1
+    assert r["fails"] == 1 and r["fail"] == {"TimeoutError": 1}
+    assert r["last"]["orphans"] == 2 and r["last"]["orphan_chunks"] == 9  # последний, не первый
+    assert "secret" not in json.dumps(r)
+    empty = sd.build_digest([ln(T0, "INFO", "g", metrics_msg())])["rag"]
+    assert empty == {"n": 0, "bad": 0, "skip": 0, "fails": 0, "fail": {}, "last": None}
+
+
+def test_rag_persisted_not_in_drift(paths):
+    logf, opsf = paths
+    write(logf, day_lines(0, 2) + [ln(T0, "INFO", "bot", RAG_LINE)], mode="w")
+    res = sd.run_once(logf, opsf)
+    assert res["status"] == "written" and "rag" not in sd.DRIFT_KEYS
+    assert OpsDB(opsf).last_digest().payload["rag"]["last"]["partial"] == 1

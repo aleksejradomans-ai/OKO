@@ -9,6 +9,9 @@ read-only, проба Ollama (/api/version, /api/ps), состояние слу�
   без слова «warning» до калибровки;
 - служба остановлена = «остановлен (игра?)» без тревоги;
 - подписи M6 — сокращения ce/ad/rl/intent, без «empathy/resistance».
+v2 (25.10): телеметрия из того же хвоста лога — окно ([CTX] call=main), сессия ([DEPTH],
+[EPOCH], P1 за час), метрика S ([VECTOR_S]); RAG — из последней сводки сна. Без цвета.
+telemetry_rows/telemetry_snapshot — общий источник для HUD и /status бота.
 """
 from __future__ import annotations
 
@@ -89,6 +92,14 @@ class HudSnapshot:
     models: List[Tuple[str, float]] = field(default_factory=list)   # (имя, ГБ в VRAM)
     service: Optional[str] = None   # RUNNING | STOPPED | ... | None (не Windows / нет данных)
     sleep: Optional[dict] = None
+    ctx: Optional[dict] = None          # последний [CTX] call=main
+    ctx_ts: Optional[float] = None
+    depth: Optional[dict] = None        # последний [DEPTH]
+    depth_ts: Optional[float] = None
+    epoch_ts: Optional[float] = None    # ts последнего [EPOCH] new
+    vs: Optional[dict] = None           # последний [VECTOR_S] point|fail
+    vs_ts: Optional[float] = None
+    p1_last_hour: int = 0
     errors: List[str] = field(default_factory=list)
 
 
@@ -102,6 +113,9 @@ class LogWatcher:
         self.gate, self.gate_from_log, self.gate_ts, self.gate_pause = "CLOSED", False, None, None
         self.metrics, self.metrics_ts, self.last_msg_ts = None, None, None
         self.red_times: List[float] = []
+        self.ctx, self.ctx_ts, self.depth, self.depth_ts = None, None, None, None
+        self.epoch_ts, self.vs, self.vs_ts = None, None, None
+        self.p1_times: List[float] = []
 
     def _initial_cursor(self) -> Cursor:
         with open(self.path, "rb") as f:
@@ -140,10 +154,33 @@ class LogWatcher:
                 self.metrics, self.metrics_ts = mt, ts
         elif msg.startswith("Processing message from"):
             self.last_msg_ts = ts
+        elif msg.startswith("[CTX]"):
+            cx = sd.parse_ctx(msg)
+            if cx is not None and cx["call"] == "main":   # judge/correct/discuss — не окно ответа
+                self.ctx, self.ctx_ts = cx, ts
+        elif msg.startswith("[DEPTH]"):
+            dp = sd.parse_depth(msg)
+            if dp is not None:
+                self.depth, self.depth_ts = dp, ts
+        elif msg.startswith("[EPOCH]"):
+            ep = sd.parse_epoch(msg)
+            if ep is not None:
+                self.epoch_ts = ep
+        elif msg.startswith("[VECTOR_S]"):
+            vs = sd.parse_vector_s(msg)
+            if vs is not None and vs["kind"] in ("point", "fail"):
+                self.vs, self.vs_ts = vs, ts
+        elif msg.startswith("P1 loop guard"):
+            self.p1_times.append(ts)
 
     def red_count(self, now: float, window_s: float = 3600) -> int:
         self.red_times = [t for t in self.red_times if now - t <= window_s]
         return len(self.red_times)
+
+    def p1_count(self, now: float, window_s: float = 3600) -> int:
+        """Сколько обменов P1 loop guard не записал за окно (занижает turns в [DEPTH])."""
+        self.p1_times = [t for t in self.p1_times if now - t <= window_s]
+        return len(self.p1_times)
 
 
 # --- внешние пробы ------------------------------------------------------------------
@@ -202,11 +239,15 @@ def read_sleep(ops_path: Path) -> Optional[dict]:
     if not row:
         return None
     try:
-        drift = json.loads(row[4]).get("drift", {})
+        payload = json.loads(row[4])
     except (ValueError, TypeError):
-        drift = {}
+        payload = {}
+    payload = payload if isinstance(payload, dict) else {}
+    drift = payload.get("drift") or {}
+    rag = (payload.get("rag") or {}).get("last") if isinstance(payload.get("rag"), dict) else None
     return {"created_at": row[0], "answers": row[1], "drift_score": row[2],
-            "drift_status": row[3], "baseline_samples": drift.get("baseline_samples")}
+            "drift_status": row[3], "baseline_samples": drift.get("baseline_samples"),
+            "rag": rag if isinstance(rag, dict) else None}
 
 
 class HudCollector:
@@ -260,7 +301,9 @@ class HudCollector:
             log_ok=bool(ok_log and polled), ollama_up=self._ol_up,
             ollama_version=self._ol.get("version"), ollama_rtt_ms=self._ol.get("rtt_ms"),
             models=list(self._ol.get("models", [])), service=self._svc,
-            sleep=self._sleep_val, errors=sorted(self._errs.values()))
+            sleep=self._sleep_val, ctx=w.ctx, ctx_ts=w.ctx_ts, depth=w.depth,
+            depth_ts=w.depth_ts, epoch_ts=w.epoch_ts, vs=w.vs, vs_ts=w.vs_ts,
+            p1_last_hour=w.p1_count(now), errors=sorted(self._errs.values()))
 
 
 # --- отображение (чистые функции) ----------------------------------------------------
@@ -279,6 +322,49 @@ def _ago(now: float, ts: Optional[float]) -> str:
     if s < 48 * 3600:
         return f"{s // 3600} ч назад"
     return f"{s // 86400} дн назад"
+
+
+def telemetry_snapshot(w: LogWatcher, now: float) -> HudSnapshot:
+    """Снимок только телеметрии (для /status бота: без проб Ollama/службы/ops.db)."""
+    return HudSnapshot(now=now, ctx=w.ctx, ctx_ts=w.ctx_ts, depth=w.depth, depth_ts=w.depth_ts,
+                       epoch_ts=w.epoch_ts, vs=w.vs, vs_ts=w.vs_ts, p1_last_hour=w.p1_count(now))
+
+
+def _bar(x: float, width: int = 10) -> str:
+    n = max(0, min(width, int(round(x * width))))
+    return "█" * n + "░" * (width - n)
+
+
+def telemetry_rows(s: HudSnapshot) -> List[Tuple[str, str]]:
+    """Окно / сессия / S — без цвета и без порогов (этап 1 рубежа: только наблюдение)."""
+    rows: List[Tuple[str, str]] = []
+    c = s.ctx
+    if c and c.get("fill") is not None:
+        pe = "—" if c.get("pe") is None else f"{int(c['pe'])}"
+        nctx = "—" if c.get("nctx") is None else f"{int(c['nctx'])}"
+        rows.append((f"Окно {_hm(s.ctx_ts)}: fill {c['fill']:.2f} {_bar(c['fill'])} · "
+                     f"{pe}/{nctx} ток.", "plain"))
+    elif c:
+        rows.append((f"Окно {_hm(s.ctx_ts)}: fill —", "plain"))
+    else:
+        rows.append(("Окно: в хвосте лога нет [CTX] call=main", "muted"))
+    d = s.depth
+    if d:
+        tail = f" · эпоха с {_hm(s.epoch_ts)}" if s.epoch_ts else ""
+        tail += f" · P1 за час {s.p1_last_hour}" if s.p1_last_hour else ""
+        rows.append((f"Сессия {_hm(s.depth_ts)}: записано ответов {d['turns']} · "
+                     f"активно {d['active_s'] / 60:.0f} мин{tail}", "plain"))
+    else:
+        rows.append(("Сессия: в хвосте лога нет [DEPTH]", "muted"))
+    v = s.vs
+    if v and v["kind"] == "point":
+        rows.append((f"S {_hm(s.vs_ts)}: identity {v['s_identity']:.2f} · "
+                     f"manifest {v['s_manifest']:.2f}", "plain"))
+    elif v:
+        rows.append((f"S {_hm(s.vs_ts)}: сбой {v['type']}", "plain"))
+    else:
+        rows.append(("S: в хвосте лога нет [VECTOR_S]", "muted"))
+    return rows
 
 
 def render(s: HudSnapshot) -> List[Tuple[str, str]]:
@@ -328,11 +414,18 @@ def render(s: HudSnapshot) -> List[Tuple[str, str]]:
         drift = "—" if sl.get("drift_score") is None else f"{sl['drift_score']:.2f}"
         base = (f" · база {sl['baseline_samples']}/{sd.BASELINE_MIN_SAMPLES}"
                 if sl.get("drift_status") == "baseline_pending" and sl.get("baseline_samples") is not None else "")
+        rg = sl.get("rag")
+        rag = ""
+        if rg:
+            issues = sum(int(rg.get(k) or 0) for k in ("missing", "partial", "orphans"))
+            rag = f" · RAG {rg.get('rows')} зап., расхождений {issues}"
         rows.append((f"Сон {_hm(sl.get('created_at'))}: ответов {sl.get('answers')} · дрейф {drift} "
-                     f"({sl.get('drift_status')}){base}", "plain"))
+                     f"({sl.get('drift_status')}){base}{rag}", "plain"))
     else:
         rows.append(("Сон: нет данных", "muted"))
-    # 6. подвал
+    # 6. телеметрия v2 (после сна: порядок строк 1-5 не меняется)
+    rows.extend(telemetry_rows(s))
+    # 7. подвал
     foot = []
     if s.red_last_hour:
         foot.append(f"красных строк за час: {s.red_last_hour}")

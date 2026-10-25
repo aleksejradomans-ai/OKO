@@ -106,6 +106,17 @@ def scan_orphans(conn, collection):
     return orphans, no_hash
 
 
+def hygiene_counts(conn, collection) -> dict:
+    """M7.4 (RAG-гигиена во сне): только ЧИСЛА dry-run-скана, без имён файлов,
+    хэшей и содержимого -> строка лога [RAG_HYGIENE] -> sleep_digest. Ничего не
+    пишет. Лечение -- только руками (--apply), как и раньше."""
+    missing, partial, total = scan(conn, collection)
+    orphans, no_hash = scan_orphans(conn, collection)
+    return {"rows": total, "missing": len(missing), "partial": len(partial),
+            "orphans": len(orphans), "orphan_chunks": sum(o["chunks"] for o in orphans),
+            "no_hash": no_hash}
+
+
 def heal(item: dict, replace: bool) -> int:
     if replace:
         with ki._chroma_write_lock:

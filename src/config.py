@@ -247,3 +247,34 @@ SLEEP_CHECK_INTERVAL_S: float = _get_env_float("SLEEP_CHECK_INTERVAL_S", 300.0)
 # --- Метрика S (векторный маркер): только наблюдение, порогов нет ---
 # OKO_VECTOR_S=0 -> выключено (откат без правки кода). Модель -- OLLAMA_EMBED_MODEL.
 VECTOR_S_ENABLED: bool = os.getenv("OKO_VECTOR_S", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# --- Рубеж погружения, этап 1 (только наблюдение, порогов нет) ---
+# Битые/неположительные значения -> дефолт (наблюдение не роняет бота).
+# Имена атрибутов = имена в getattr(config, ...) governor/bot; сверяет
+# test_config_switches.py (иначе переключатель мёртв, а тесты зелёные).
+# OKO_CTX_LOG=0 -> строки [CTX] выключены (откат без правки кода).
+OKO_CTX_LOG: bool = os.getenv("OKO_CTX_LOG", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _get_env_pos_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+# Знаменатель fill в [CTX], если в options нет num_ctx. Должен совпадать с
+# реальным контекстом рантайма Ollama (/api/ps context_length; 4096 при
+# незаданном OLLAMA_CONTEXT_LENGTH). На сам num_ctx запросов НЕ влияет.
+OKO_RUNTIME_NUM_CTX: int = _get_env_pos_int("OKO_RUNTIME_NUM_CTX", 4096)
+
+# Граница сессии для [DEPTH]: пауза между ответами > N секунд. На историю
+# диалога НЕ влияет (граница истории -- только /newepoch, M7.3).
+_depth_pause = _get_env_float("OKO_DEPTH_PAUSE_S", 2400.0)
+OKO_DEPTH_PAUSE_S: float = _depth_pause if _depth_pause > 0 else 2400.0
+
+# --- M7.4 RAG-гигиена во сне (только отчёт, лечение руками) ---
+# OKO_RAG_HYGIENE=0 -> скан SQLite<->ChromaDB перед сводкой сна не делается.
+OKO_RAG_HYGIENE: bool = os.getenv("OKO_RAG_HYGIENE", "1").strip().lower() not in ("0", "false", "no", "off")

@@ -1,4 +1,4 @@
-"""hud_overlay.py — HUD-оверлей Ока (PyQt6), v1. ТЗ: claude/TZ_hud_overlay_2026-10-20.md.
+"""hud_overlay.py — HUD-оверлей Ока (PyQt6), v2 (телеметрия окна/сессии/S, 25.10). ТЗ: claude/TZ_hud_overlay_2026-10-20.md.
 
 Запуск (без консольного окна, один экземпляр):
     <python>\\pythonw.exe <repo>\\src\\hud_overlay.py
@@ -36,6 +36,7 @@ VK_F11 = 0x7A
 GWL_EXSTYLE = -20
 WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_EX_NOACTIVATE = 0x00080000, 0x00000020, 0x08000000
 IS_WIN = sys.platform == "win32"
+MAX_ROWS = 10   # render(): 5 строк v1 + 3 телеметрии + подвал (+1 запас); лишние молча терялись бы
 
 
 class Worker(QObject):
@@ -93,7 +94,7 @@ class Hud(QWidget):
         lay.setSpacing(2)
         self.labels = []
         font = QFont("Segoe UI", 9)
-        for _ in range(7):
+        for _ in range(MAX_ROWS):
             lb = QLabel("")
             lb.setFont(font)
             lb.setTextFormat(Qt.TextFormat.PlainText)

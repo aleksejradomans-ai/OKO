@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import sqlite3
 import time
 import uuid
@@ -170,6 +171,31 @@ class MemoryCore:
         with self._tx() as c:
             c.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, value))
 
+    # --- эпоха (M7.3): граница истории диалога, журнал не трогается -------
+    EPOCH_KEY_PREFIX = "epoch_start:"
+
+    def epoch_start(self, subject_id: str) -> Optional[float]:
+        """ts начала текущей эпохи субъекта или None (эпох не было). Битое,
+        нечисловое или будущее значение -> None: граница не должна молча
+        скрыть всю историю."""
+        raw = self.meta_get(self.EPOCH_KEY_PREFIX + subject_id)
+        if raw is None:
+            return None
+        try:
+            ts = float(raw)
+        except ValueError:
+            return None
+        if not math.isfinite(ts) or ts > time.time() + 60.0:
+            return None
+        return ts
+
+    def new_epoch(self, subject_id: str, ts: Optional[float] = None) -> float:
+        """/newepoch: история для модели начинается с ts. Журнал events, индекс,
+        S и база дрейфа не трогаются. Часы те же, что у record_exchange."""
+        ts = time.time() if ts is None else float(ts)
+        self.meta_set(self.EPOCH_KEY_PREFIX + subject_id, repr(ts))
+        return ts
+
     def drain_index(self, limit: int = 100) -> int:
         """Переносит очередь в индекс. Сбой индекса не трогает журнал."""
         done = 0
@@ -195,10 +221,18 @@ class MemoryCore:
             pass
 
     # --- чтение ----------------------------------------------------------
-    def history(self, subject_id: str, limit: int = 20) -> List[Tuple[str, str]]:
+    def history(self, subject_id: str, limit: int = 20,
+                since_ts: Optional[float] = None) -> List[Tuple[str, str]]:
+        """Последние limit событий (порядок по event_id). since_ts (M7.3) —
+        только события с ts >= since_ts (граница эпохи)."""
         with self._tx() as c:
-            rows = c.execute("SELECT role, content FROM events WHERE subject_id=? "
-                             "ORDER BY event_id DESC LIMIT ?", (subject_id, limit)).fetchall()
+            if since_ts is None:
+                rows = c.execute("SELECT role, content FROM events WHERE subject_id=? "
+                                 "ORDER BY event_id DESC LIMIT ?", (subject_id, limit)).fetchall()
+            else:
+                rows = c.execute("SELECT role, content FROM events WHERE subject_id=? "
+                                 "AND ts >= ? ORDER BY event_id DESC LIMIT ?",
+                                 (subject_id, float(since_ts), limit)).fetchall()
         return list(reversed(rows))
 
     def recall(self, subject_id: str, query: str, k: int = 5) -> List[str]:
@@ -213,6 +247,47 @@ class MemoryCore:
             rows = dict(c.execute(f"SELECT event_id, content FROM events WHERE subject_id=? "
                                   f"AND event_id IN ({marks})", (subject_id, *ids)).fetchall())
         return [rows[i] for i in ids if i in rows]
+
+    def session_stats(self, subject_id: str, pause_s: float,
+                      since_ts: Optional[float] = None,
+                      pause_within_epoch: bool = False) -> dict:
+        """Метрики текущей сессии субъекта. ТОЛЬКО чтение, без состояния в памяти.
+        turns — число ответов; span_s — от первого до последнего; active_s — сумма
+        интервалов между ответами, НЕ превышающих pause_s (длинные паузы вырезаны).
+
+        Границы сессии: без since_ts — назад от последнего ответа, пока интервал
+        между соседними ответами <= pause_s (пауза > pause_s обрывает сессию). С
+        since_ts (M7.3, граница эпохи) — все ответы с ts >= since_ts; тогда active_s
+        < span_s, если внутри эпохи были паузы > pause_s. pause_within_epoch=True —
+        граница = более поздняя из (эпоха, пауза > pause_s): решение 2 ТЗ рубежа.
+        Пустая история (или нет ответов после эпохи) -> нули."""
+        with self._tx() as c:
+            if since_ts is None:
+                rows = c.execute(
+                    "SELECT ts FROM events WHERE subject_id=? AND role='assistant' "
+                    "ORDER BY ts DESC LIMIT 500", (subject_id,)).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT ts FROM events WHERE subject_id=? AND role='assistant' "
+                    "AND ts >= ? ORDER BY ts DESC LIMIT 500",
+                    (subject_id, float(since_ts))).fetchall()
+        ts = [r[0] for r in rows]  # по убыванию: новые -> старые
+        if not ts:
+            return {"turns": 0, "active_s": 0.0, "span_s": 0.0}
+        cut_by_pause = since_ts is None or pause_within_epoch
+        session = [ts[0]]
+        for t in ts[1:]:
+            if cut_by_pause and session[-1] - t > pause_s:
+                break
+            session.append(t)
+        session.reverse()  # старые -> новые
+        turns = len(session)
+        if turns < 2:
+            return {"turns": turns, "active_s": 0.0, "span_s": 0.0}
+        span_s = round(session[-1] - session[0], 1)
+        active_s = round(sum(b - a for a, b in zip(session, session[1:])
+                             if (b - a) <= pause_s), 1)
+        return {"turns": turns, "active_s": active_s, "span_s": span_s}
 
     def inventory(self, subject_id: str) -> dict:
         """Детерминированный ответ на «что ты обо мне хранишь». Без LLM."""
@@ -237,6 +312,7 @@ class MemoryCore:
         self.index.delete_subject(subject_id)
         with self._tx() as c:
             c.execute("DELETE FROM subjects WHERE subject_id=?", (subject_id,))
+            c.execute("DELETE FROM meta WHERE key=?", (self.EPOCH_KEY_PREFIX + subject_id,))
         self._physical_wipe()
         if purge_snapshots:
             self._reset_snapshots()

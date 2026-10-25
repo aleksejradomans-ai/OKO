@@ -53,3 +53,9 @@ _backup_rag_*/
 export_public.py
 sync_public.py
 import_graph.py
+
+# game watcher: personal process names
+games_candidates.log
+
+# game watcher: personal process names
+games_candidates.log

@@ -253,3 +253,80 @@ def test_overlay_module_imports():
     pytest.importorskip("PyQt6.QtWidgets")
     import hud_overlay
     assert hud_overlay.VK_F11 == 0x7A and set(hud_overlay.TONES) >= {"ok", "alert", "warn", "muted", "plain"}
+
+
+# --- v2: телеметрия окна / сессии / S ------------------------------------------------
+CTX_MAIN = "[CTX] call=main pe=1190 ev=16 nctx=4096 fill=0.291 chars=3279"
+CTX_JUDGE = "[CTX] call=judge pe=469 ev=2 nctx=4096 fill=0.115 chars=1898"
+DEPTH = "[DEPTH] turns=3 active_s=821.7 span_s=821.7 pause_s=2400"
+VS = "[VECTOR_S] point=B s_identity=0.560 s_manifest=0.437 id=346e1128 man=c14d5e55 trunc=0 ms=4375"
+RAG = "[RAG_HYGIENE] rows=2 missing=0 partial=1 orphans=0 orphan_chunks=0 no_hash=0"
+
+
+def test_v2_feed_main_only_depth_epoch_vs_p1(logf):
+    append(logf,
+           ln(T0, "INFO", "kernel.governor", CTX_MAIN),
+           ln(T0 + timedelta(seconds=1), "INFO", "kernel.governor", CTX_JUDGE),   # не перетирает main
+           ln(T0 + timedelta(seconds=2), "WARNING", "bot", "P1 loop guard: repeated answer not persisted (user=1)"),
+           ln(T0 + timedelta(seconds=2), "INFO", "bot", DEPTH),
+           ln(T0 + timedelta(seconds=3), "INFO", "bot", "[EPOCH] new ts=1792922814.0"),
+           ln(T0 + timedelta(seconds=4), "INFO", "kernel.governor", VS),
+           ln(T0 + timedelta(seconds=5), "WARNING", "kernel.governor", "[VECTOR_S] point=B fail=TimeoutError x"))
+    w = hs.LogWatcher(logf)
+    w.poll()
+    assert w.ctx["fill"] == 0.291 and w.ctx["call"] == "main" and w.ctx_ts == ts(T0)
+    assert w.depth == {"turns": 3, "active_s": 821.7, "span_s": 821.7}
+    assert w.epoch_ts == 1792922814.0
+    assert w.vs == {"kind": "fail", "point": "B", "type": "TimeoutError"}   # последний — сбой
+    assert w.p1_count(ts(T0) + 10) == 1 and w.p1_count(ts(T0) + 7200) == 0
+
+
+def test_telemetry_rows_full_and_empty():
+    full = hs.HudSnapshot(now=ts(T0), ctx=hs.sd.parse_ctx(CTX_MAIN), ctx_ts=ts(T0),
+                          depth={"turns": 3, "active_s": 821.7, "span_s": 821.7}, depth_ts=ts(T0),
+                          epoch_ts=ts(T0), vs=hs.sd.parse_vector_s(VS), vs_ts=ts(T0), p1_last_hour=2)
+    rows = hs.telemetry_rows(full)
+    assert [t for _, t in rows] == ["plain", "plain", "plain"]                # без цвета, без порогов
+    assert rows[0][0] == "Окно 21:20: fill 0.29 ███░░░░░░░ · 1190/4096 ток."
+    assert rows[1][0] == "Сессия 21:20: записано ответов 3 · активно 14 мин · эпоха с 21:20 · P1 за час 2"
+    assert rows[2][0] == "S 21:20: identity 0.56 · manifest 0.44"
+    empty = hs.telemetry_rows(hs.HudSnapshot(now=ts(T0)))
+    assert [t for _, t in empty] == ["muted"] * 3
+    dash = hs.telemetry_rows(hs.HudSnapshot(now=ts(T0), ctx=hs.sd.parse_ctx(
+        "[CTX] call=main pe=- ev=- nctx=4096 fill=- chars=10"), ctx_ts=ts(T0)))
+    assert dash[0][0] == "Окно 21:20: fill —"
+    assert hs._bar(0.0) == "░" * 10 and hs._bar(1.5) == "█" * 10
+
+
+def test_render_v2_rows_after_sleep_and_collector_fills_snapshot(logf, tmp_path):
+    append(logf, ln(T0, "INFO", "kernel.governor", CTX_MAIN), ln(T0, "INFO", "bot", DEPTH))
+    c = hs.HudCollector(logf, tmp_path / "ops.db", ollama=lambda: {}, service=lambda: "RUNNING",
+                        sleep_reader=lambda p: None, clock=lambda: ts(T0))
+    s = c.tick()
+    assert s.ctx["fill"] == 0.291 and s.depth["turns"] == 3
+    rows = hs.render(s)
+    assert rows[4] == ("Сон: нет данных", "muted")            # строки 1-5 v1 на прежних местах
+    assert rows[5][0].startswith("Окно 21:20: fill 0.29") and rows[6][0].startswith("Сессия")
+    assert "warning" not in " ".join(t for t, _ in rows).lower()
+
+
+def test_read_sleep_rag_last(tmp_path):
+    logf = tmp_path / "bot.log"
+    logf.write_text(ln(T0, "INFO", "g", METRICS) + ln(T0, "INFO", "bot", RAG), encoding="utf-8")
+    opsf = tmp_path / "data" / "ops.db"
+    sd.run_once(logf, opsf)
+    r = hs.read_sleep(opsf)
+    assert r["rag"] == {"rows": 2, "missing": 0, "partial": 1, "orphans": 0,
+                        "orphan_chunks": 0, "no_hash": 0}
+    row = [t for t, _ in hs.render(snap(sleep=r))][4]
+    assert row.endswith("· RAG 2 зап., расхождений 1")
+
+
+def test_overlay_has_room_for_all_rows():
+    pytest.importorskip("PyQt6.QtWidgets")
+    import hud_overlay
+    full = snap(ctx=sd.parse_ctx(CTX_MAIN), depth={"turns": 1, "active_s": 0.0, "span_s": 0.0},
+                vs=sd.parse_vector_s(VS), red_last_hour=1, errors=["x"],
+                sleep={"created_at": ts(T0), "answers": 1, "drift_score": None,
+                       "drift_status": "no_metrics", "baseline_samples": None})
+    assert len(hs.render(full)) <= hud_overlay.MAX_ROWS

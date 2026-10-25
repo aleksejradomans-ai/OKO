@@ -350,9 +350,12 @@ def _get_memory() -> MemoryCore:
 
 
 def _fetch_history(user_id: int, limit: int) -> list:
-    """История из ядра памяти (порядок по event_id)."""
+    """История из ядра памяти (порядок по event_id). M7.3: только текущая
+    эпоха (/newepoch); без эпохи — как раньше. P1 loop guard использует ту же
+    границу (см. _save_exchange)."""
     core = _get_memory()
-    return core.history(core.resolve("telegram", str(user_id)), limit)
+    sid = core.resolve("telegram", str(user_id))
+    return core.history(sid, limit, since_ts=core.epoch_start(sid))
 
 
 def _save_exchange(user_id: int, user_text: str, assistant_text: str) -> None:
@@ -367,7 +370,10 @@ def _save_exchange(user_id: int, user_text: str, assistant_text: str) -> None:
     norm = lambda t: " ".join(t.split()).lower()
     a_norm = norm(assistant_text)
     if len(a_norm) >= 40:
-        recent = core.history(sid, LOOP_GUARD_WINDOW)
+        # M7.3: окно P1 — только текущая эпоха. Ответы до /newepoch модель не
+        # видит, обратной связи через память нет; без границы P1 блокировал
+        # запись повторяющихся коротких ответов и эпоха не наполнялась (12:01:06).
+        recent = core.history(sid, LOOP_GUARD_WINDOW, since_ts=core.epoch_start(sid))
         for i, (role, content) in enumerate(recent):
             if role == "assistant" and norm(content) == a_norm:
                 prev_q = recent[i - 1][1] if i > 0 and recent[i - 1][0] == "user" else None
@@ -452,6 +458,22 @@ def _with_notice(response: str, incidents) -> str:
     return f"{notice}\n{response}" if notice else response
 
 
+def _log_depth(user_id: int) -> None:
+    """[DEPTH] (этап 1 рубежа погружения): глубина/длительность текущей сессии
+    субъекта — одна INFO-строка без user_id и текста. Только чтение memory.db.
+    Сбой наблюдателя не ломает ответ (WARNING, не ERROR -> не считается watchdog)."""
+    try:
+        core = _get_memory()
+        sid = core.resolve("telegram", str(user_id))
+        pause = float(getattr(config, "OKO_DEPTH_PAUSE_S", 2400))
+        st = core.session_stats(sid, pause, since_ts=core.epoch_start(sid),
+                                pause_within_epoch=True)
+        logger.info("[DEPTH] turns=%d active_s=%.1f span_s=%.1f pause_s=%.0f",
+                    st["turns"], st["active_s"], st["span_s"], pause)
+    except Exception as e:
+        logger.warning("[DEPTH] fail=%s %s", type(e).__name__, e)
+
+
 async def process_logic(
     user_input: str,
     user_id: int,
@@ -524,6 +546,7 @@ async def process_logic(
                        raw_response.strip()[:40], user_id)
     else:
         await asyncio.to_thread(_save_exchange, user_id, sanitized_input, raw_response)
+        await asyncio.to_thread(_log_depth, user_id)
     return _with_notice(raw_response, getattr(result, "incidents", None))
 
 
@@ -657,10 +680,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     final_response = core.format_final(clean_response[:MAX_MSG_LEN - len(core.name) - 4])
     logger.info(f"Response routed to {user_id}: {final_response[:50]}")
 
-    try:
-        await update.message.reply_text(final_response)
-    except Exception as e:
-        logger.error(f"Telegram transport send error for user={user_id}: {e}")
+    await _reply_with_retry(update.message, final_response, user_id)
+
+
+# TG_SEND_RETRY (25.10): к моменту отправки ответ уже сгенерирован и записан в память
+# (_save_exchange). Разовый сбой сети Telegram (httpx.ConnectError 17:07:56) терял ответ:
+# история модели расходилась с тем, что видел Оператор, а строка шла ERROR (красная).
+# Транспорт -> до 2 повторов, WARNING [TG_TRANSPORT] (M5b). TimedOut НЕ повторяется:
+# сообщение могло уже дойти (дубль хуже потери). Не транспорт (BadRequest) -> ERROR.
+SEND_RETRY_DELAYS_S = (2.0, 5.0)
+
+
+async def _reply_with_retry(message, text: str, user_id) -> bool:
+    from telegram.error import TimedOut
+    for attempt in range(len(SEND_RETRY_DELAYS_S) + 1):
+        try:
+            await message.reply_text(text)
+            if attempt:
+                logger.info("[TG_TRANSPORT] send ok after retry=%d user=%s", attempt, user_id)
+            return True
+        except Exception as e:
+            if not _is_tg_transport_error(e):
+                logger.error("Telegram send error for user=%s: %s", user_id, e)
+                return False
+            if isinstance(e, TimedOut) or attempt >= len(SEND_RETRY_DELAYS_S):
+                logger.warning("[TG_TRANSPORT] send fail final attempts=%d user=%s err=%s",
+                               attempt + 1, user_id, type(e).__name__)
+                return False
+            logger.warning("[TG_TRANSPORT] send fail attempt=%d user=%s err=%s retry_in_s=%.0f",
+                           attempt + 1, user_id, type(e).__name__, SEND_RETRY_DELAYS_S[attempt])
+            await asyncio.sleep(SEND_RETRY_DELAYS_S[attempt])
+    return False
 
 
 async def handle_discuss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -864,6 +914,11 @@ async def handle_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     хранятся», хотя журнал хранит всю переписку."""
     if update.message is None or update.effective_user is None:
         return
+    # ADMIN_GATE (25.10): fail-closed, как /discuss и обычный чат. Без проверки
+    # посторонний получал сводку и resolve() создавал ему subject в memory.db.
+    if update.effective_user.id not in config.ADMIN_USER_IDS:
+        logger.warning("Unauthorized /memory attempt from user_id=%s", update.effective_user.id)
+        return
     from datetime import datetime as _dt
     core = _get_memory()
     inv = core.inventory(core.resolve("telegram", str(update.effective_user.id)))
@@ -915,6 +970,25 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
             pass
 
 
+TELEMETRY_TAIL_BYTES = 256 * 1024
+
+
+def _telemetry_status_text() -> str:
+    """HUD v2 для /status: последние [CTX] main / [DEPTH] / [EPOCH] / P1 / [VECTOR_S] из хвоста
+    лога — тот же разбор, что у HUD (hud_state). Только чтение, текста сообщений нет."""
+    if config.OKO_LOG_FILE is None:
+        return "лог не задан (OKO_LOG_FILE) -> телеметрии нет"
+    try:
+        import hud_state
+        w = hud_state.LogWatcher(config.OKO_LOG_FILE, start_tail=TELEMETRY_TAIL_BYTES)
+        if not w.poll():
+            return "лог не найден"
+        snap = hud_state.telemetry_snapshot(w, time.time())
+        return "\n".join(text for text, _ in hud_state.telemetry_rows(snap))
+    except Exception as e:
+        return f"ошибка чтения лога ({type(e).__name__})"
+
+
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Админ-команда /status — снимок здоровья системы без чтения логов.
     Закрыта по умолчанию: без ADMIN_USER_IDS в .env команда не отвечает
@@ -941,6 +1015,7 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
     sleep_text = await asyncio.to_thread(_sleep_status_text)
+    telemetry_text = await asyncio.to_thread(_telemetry_status_text)
 
     report = (
         "KERNEL STATUS\n"
@@ -971,6 +1046,9 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "\n"
         "SLEEP (M7: сводка лога + дрейф; только наблюдение, порогов нет)\n"
         f"{sleep_text}\n"
+        "\n"
+        f"TELEMETRY (хвост лога {TELEMETRY_TAIL_BYTES // 1024} КБ; рубеж этап 1 — наблюдение)\n"
+        f"{telemetry_text}\n"
         "\n"
         "DEGRADATION MARKERS\n"
         f"transport_failures: {state.get('transport_failures', 0)}\n"
@@ -1354,6 +1432,9 @@ async def handle_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if update.message is None or update.effective_user is None:
         return
     user_id = update.effective_user.id
+    if user_id not in config.ADMIN_USER_IDS:  # ADMIN_GATE (25.10), см. handle_memory
+        logger.warning("Unauthorized /forget attempt from user_id=%s", user_id)
+        return
     core = _get_memory()
     sid = core.resolve("telegram", str(user_id))
     telegram_note = ("Переписку в самом Telegram это не затрагивает: "
@@ -1369,6 +1450,39 @@ async def handle_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.warning("R1 /forget executed: user=%s events=%s", user_id, n)
     await update.message.reply_text(
         f"Удалено записей: {n}. Журнал, снапшоты и файлы базы очищены.\n{telegram_note}"
+    )
+
+
+def _new_epoch(user_id: int) -> tuple:
+    """M7.3: граница эпохи для истории. Журнал, индекс, S и дрейф не трогаются."""
+    core = _get_memory()
+    sid = core.resolve("telegram", str(user_id))
+    ts = core.new_epoch(sid)
+    return ts, core.inventory(sid)["events"]
+
+
+async def handle_newepoch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/newepoch (M7.3, R2): история диалога для модели начинается заново.
+    Ничего не удаляет. RAG по эпохе не фильтруется (решение Оператора D3).
+    Управляющая команда: fail-closed для не-админов, как /discuss."""
+    if not update.message or not update.message.from_user:
+        return
+    user_id = update.message.from_user.id
+    if user_id not in config.ADMIN_USER_IDS:
+        logger.warning("Unauthorized /newepoch attempt from user_id=%s", user_id)
+        return
+    try:
+        ts, n = await asyncio.to_thread(_new_epoch, user_id)
+    except Exception as e:
+        logger.error("[EPOCH] fail=%s %s", type(e).__name__, e)
+        await update.message.reply_text("[ERR: EPOCH_FAULT] Эпоха не сменена, история прежняя.")
+        return
+    logger.info("[EPOCH] new ts=%.0f", ts)
+    await update.message.reply_text(
+        f"Новая эпоха с {time.strftime('%Y-%m-%d %H:%M', time.localtime(ts))}. "
+        f"История диалога для модели начинается заново.\n"
+        f"Журнал не удалён ({n} записей), /memory и /forget работают как прежде. "
+        f"Поиск по базе знаний (RAG) эпохой не ограничен."
     )
 
 
@@ -1424,6 +1538,40 @@ def _sleep_status_text() -> str:
     return f"{line}\nidle_min: {idle_min:.0f}\nlog: {log_src}"
 
 
+RAG_HYGIENE_TIMEOUT_S = 120.0
+_RAG_KEYS = ("rows", "missing", "partial", "orphans", "orphan_chunks", "no_hash")
+
+
+def _rag_hygiene_counts() -> Optional[dict]:
+    """M7.4: dry-run скан rag_resync (только чтение SQLite + ChromaDB). None --
+    oko_rag недоступен. Импорт ленивый: rag_resync нужен только во сне."""
+    import rag_resync
+    from contextlib import closing
+    if not knowledge_indexer.RAG_SYNC_AVAILABLE:
+        return None
+    with closing(db.get_connection()) as conn:
+        collection = knowledge_indexer.oko_rag_indexer.get_collection()
+        return rag_resync.hygiene_counts(conn, collection)
+
+
+async def _log_rag_hygiene() -> None:
+    """[RAG_HYGIENE] перед сводкой сна -> попадает в ту же сводку. Только числа.
+    Сбой/таймаут -> WARNING (наблюдение не краснит светофор) и сон идёт дальше."""
+    if not getattr(config, "OKO_RAG_HYGIENE", True):
+        return
+    try:
+        counts = await asyncio.wait_for(asyncio.to_thread(_rag_hygiene_counts),
+                                        timeout=RAG_HYGIENE_TIMEOUT_S)
+        if counts is None:
+            logger.info("[RAG_HYGIENE] skip=unavailable")
+            return
+        values = [int(counts[k]) for k in _RAG_KEYS]
+    except Exception as e:
+        logger.warning("[RAG_HYGIENE] fail=%s", type(e).__name__)
+        return
+    logger.info("[RAG_HYGIENE] " + " ".join(f"{k}=%d" for k in _RAG_KEYS), *values)
+
+
 async def sleep_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     if config.OKO_LOG_FILE is None:
         if not _sleep_state["disabled_logged"]:
@@ -1446,6 +1594,7 @@ async def sleep_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.debug("[SLEEP] skip: %s", reason)
         return
     _sleep_state["last_attempt"] = time.time()  # до await: повторный тик не войдёт
+    await _log_rag_hygiene()  # M7.4: до run_once -> строка войдёт в эту же сводку
     try:
         res = await asyncio.to_thread(sleep_digest.run_once, config.OKO_LOG_FILE, config.OPS_DB_PATH)
         if res.get("status") == "no_new_lines":
@@ -1598,6 +1747,7 @@ def main():
     app.add_handler(CommandHandler("discuss", handle_discuss))
     app.add_handler(CommandHandler("enddiscuss", handle_enddiscuss))
     app.add_handler(CommandHandler("forget", handle_forget))
+    app.add_handler(CommandHandler("newepoch", handle_newepoch))
     app.add_handler(CallbackQueryHandler(handle_staging_callback))
     app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf_upload))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))

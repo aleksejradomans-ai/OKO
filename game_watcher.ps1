@@ -14,15 +14,36 @@
       Get-Process | Where-Object { $_.MainWindowTitle -ne "" } |
         Select-Object Name, MainWindowTitle
 
-    Candidate logging: any process using notable CPU that is not in
-    games.txt and not in the OS/background allowlist gets logged once to
-    <repo>\games_candidates.log for manual review - this is assistive,
-    not automatic enrollment. Nothing gets added to games.txt by itself.
+    Candidate logging (CANDIDATE_CPU, 2026-10-25): a process becomes a
+    candidate when it is not in games.txt, not in the name allowlist, its
+    executable is outside the OS paths below, and it uses at least
+    $CandidateCpuThreshold % of ONE logical core for $CandidateHotPolls
+    consecutive polls. It is logged once to <repo>\games_candidates.log and
+    offered to the operator in Telegram (Da/Net). Nothing gets added to
+    games.txt by itself. Before 2026-10-25 the criterion was MainWindowTitle,
+    which is always empty for a service in Session 0 (LocalSystem) - no
+    candidate was ever produced while running as the OkoGameWatcher service.
 
     Only OkoBot is stopped, not OkoWatcher - GPU is used exclusively by
     Ollama inference inside bot.py. Verified live on 2026-10-03: loading
     qwen2.5:14b-instruct-q4_K_M used 6299MiB VRAM; keep_alive=0 returned
     it to 51MiB baseline.
+
+    WATCHER_LOG (2026-10-25): every event goes to <repo>\logs\game_watcher.log
+    (appended and closed per line, UTF-8 without BOM, OkoBot log format
+    "yyyy-MM-dd HH:mm:ss,fff [LEVEL] game_watcher: [TAG] ..."), so the lines
+    carry a date and can be parsed by sleep_digest/HUD. Write-Host is kept
+    and does reach the NSSM log (OkoGameWatcher.stdout.log) immediately.
+    START_RETRY: if Start-Service fails, the bot stays "suspended" and the
+    start is retried on the next poll (before: flag reset -> bot stayed down).
+    Failures are logged on attempts 1-3, then every 25th (no log flood).
+
+    SUSPEND_FLAG (W4, 2026-10-25): "the watcher stopped OkoBot" is persisted in
+    <repo>\data\game_mode.flag (written on suspend, removed after a successful
+    start). On watcher start the flag restores $botSuspended, so a restart of
+    this service during or after a game no longer leaves OkoBot down forever.
+    Without the flag the watcher does NOT start a stopped OkoBot: a manual stop
+    by the operator (maintenance, Disabled service) is respected.
 #>
 
 $ErrorActionPreference = "Continue"
@@ -33,7 +54,37 @@ $ServiceToStop     = "OkoBot"
 $PollIntervalSec   = 12
 $GamesFile         = Join-Path $RepoRoot "games.txt"
 $CandidatesLog     = Join-Path $RepoRoot "games_candidates.log"
-$CandidateCpuThreshold = 20
+$CandidateCpuThreshold = 20     # % of ONE logical core, averaged over one poll interval
+$CandidateHotPolls     = 2      # consecutive polls above the threshold
+$CandidateExcludedPathPrefixes = @(
+    $env:windir,
+    $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles "WindowsApps" }),
+    $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles "Common Files" }),
+    $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} "Common Files" }),
+    $(if ($env:ProgramData) { Join-Path $env:ProgramData "Microsoft" })
+) | Where-Object { $_ }
+$script:CpuPrev  = @{}
+$script:HotPolls = @{}
+$LogDir            = Join-Path $RepoRoot "logs"
+$LogFile           = Join-Path $LogDir "game_watcher.log"
+$LogMaxBytes       = 5MB
+$Utf8NoBom         = New-Object System.Text.UTF8Encoding $false
+$SuspendFlag       = Join-Path (Join-Path $RepoRoot "data") "game_mode.flag"
+
+function Write-Log {
+    param([string]$Message, [string]$Level = "INFO")
+    $line = "{0} [{1}] game_watcher: {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss,fff"), $Level, $Message
+    try {
+        if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
+        if ((Test-Path $LogFile) -and ((Get-Item $LogFile).Length -gt $LogMaxBytes)) {
+            Move-Item -Path $LogFile -Destination "$LogFile.1" -Force
+        }
+        [System.IO.File]::AppendAllText($LogFile, $line + "`r`n", $Utf8NoBom)
+    } catch {
+        # logging must never stop the watcher loop
+    }
+    Write-Host $line
+}
 
 $KnownNonGameNames = @(
     "dwm", "LockApp", "CrossDeviceResume", "PhoneExperienceHost",
@@ -42,7 +93,11 @@ $KnownNonGameNames = @(
     "python", "nssm", "powershell", "pwsh", "explorer",
     "svchost", "System", "Idle", "llama-server", "ollama",
     "SearchIndexer", "RuntimeBroker", "ShellExperienceHost",
-    "ApplicationFrameHost", "conhost", "WindowsTerminal"
+    "ApplicationFrameHost", "conhost", "WindowsTerminal",
+    "pythonw", "msedge", "chrome", "firefox", "Discord", "Telegram",
+    "WhatsApp.Root", "steam", "steamwebhelper", "EpicGamesLauncher",
+    "EpicWebHelper", "Code", "Taskmgr", "MsMpEng", "NisSrv",
+    "NVIDIA Share", "nvcontainer", "NVDisplay.Container", "ollama app"
 )
 
 function Get-GameList {
@@ -81,7 +136,7 @@ function Send-GameCandidateNotification {
 
     $tg = Get-TelegramConfig
     if (-not $tg.Token -or $tg.AdminIds.Count -eq 0) {
-        Write-Warning "TELEGRAM_TOKEN or ADMIN_USER_IDS missing in .env - cannot notify."
+        Write-Log "[GAME_CANDIDATE] notify=skip reason=no_token_or_admins name=$ProcessName" "WARNING"
         return
     }
 
@@ -101,22 +156,32 @@ function Send-GameCandidateNotification {
 
         try {
             Invoke-RestMethod -Uri "https://api.telegram.org/bot$($tg.Token)/sendMessage" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 30 | Out-Null
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Telegram notification sent for candidate: $ProcessName"
+            Write-Log "[GAME_CANDIDATE] notify=sent name=$ProcessName"
         } catch {
-            Write-Warning "[$(Get-Date -Format 'HH:mm:ss')] Failed to send Telegram notification: $_"
+            Write-Log "[GAME_CANDIDATE] notify=fail name=$ProcessName err=$($_.Exception.GetType().Name)" "WARNING"
         }
     }
 }
 
+function Test-ExcludedPath {
+    param([string]$Path)
+    foreach ($prefix in $CandidateExcludedPathPrefixes) {
+        if ($Path.StartsWith($prefix.TrimEnd('\') + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Write-CandidateIfNew {
-    param([string]$ProcessName)
+    param([string]$ProcessName, [int]$CpuPct = -1)
 
     if (Test-Path $CandidatesLog) {
         $already = Select-String -Path $CandidatesLog -Pattern "^$([regex]::Escape($ProcessName))$" -Quiet -ErrorAction SilentlyContinue
         if ($already) { return }
     }
     Add-Content -Path $CandidatesLog -Value $ProcessName -Encoding ASCII
-    Write-Host "[$(Get-Date -Format 'HH:mm:ss')] New candidate process logged: $ProcessName (review $CandidatesLog)" -ForegroundColor Magenta
+    Write-Log "[GAME_CANDIDATE] new name=$ProcessName cpu_pct=$CpuPct (review $CandidatesLog)"
     Send-GameCandidateNotification -ProcessName $ProcessName
 }
 
@@ -124,14 +189,47 @@ function Update-GameCandidates {
     param([string[]]$KnownGameNames)
 
     $allowlist = $KnownNonGameNames + $KnownGameNames
+    $now = Get-Date
+    $seen = @{}
     try {
-        $heavy = Get-Process -ErrorAction SilentlyContinue |
-            Where-Object { $_.MainWindowTitle -ne "" -and $_.Name -notin $allowlist }
-        foreach ($p in $heavy) {
-            Write-CandidateIfNew -ProcessName $p.Name
+        foreach ($p in (Get-Process -ErrorAction SilentlyContinue)) {
+            if ($p.Name -in $allowlist) { continue }
+            $path = $null
+            $cpu = $null
+            try {
+                $path = $p.Path
+                $cpu = $p.TotalProcessorTime.TotalSeconds
+            } catch {
+                continue   # protected process: no access to path/CPU
+            }
+            if (-not $path -or $null -eq $cpu) { continue }
+            if (Test-ExcludedPath -Path $path) { continue }
+            $key = [string]$p.Id
+            $seen[$key] = $true
+            $prev = $script:CpuPrev[$key]
+            $script:CpuPrev[$key] = @{ Cpu = $cpu; At = $now }
+            if (-not $prev) { continue }
+            $dt = ($now - $prev.At).TotalSeconds
+            if ($dt -le 0) { continue }
+            $pct = [int][math]::Round(100 * ($cpu - $prev.Cpu) / $dt)
+            if ($pct -ge $CandidateCpuThreshold) {
+                $script:HotPolls[$key] = 1 + [int]$script:HotPolls[$key]
+                if ($script:HotPolls[$key] -ge $CandidateHotPolls) {
+                    Write-CandidateIfNew -ProcessName $p.Name -CpuPct $pct
+                }
+            } else {
+                $script:HotPolls.Remove($key)
+            }
+        }
+        foreach ($k in @($script:CpuPrev.Keys)) {
+            if (-not $seen.ContainsKey($k)) {
+                $script:CpuPrev.Remove($k)
+                $script:HotPolls.Remove($k)
+            }
         }
     } catch {
-        # non-fatal - candidate detection is best-effort
+        # non-fatal - candidate detection is best-effort, but no longer silent
+        Write-Log "[GAME_CANDIDATE] scan=fail err=$($_.Exception.GetType().Name)" "WARNING"
     }
 }
 
@@ -153,44 +251,74 @@ function Unload-OllamaModel {
     try {
         $body = @{ model = $OllamaModel; keep_alive = 0 } | ConvertTo-Json
         $result = Invoke-RestMethod -Uri $OllamaUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 10
-        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Ollama: model '$OllamaModel' unload requested (done_reason: $($result.done_reason))."
+        Write-Log "[GAME_MODE] vram_unload=ok model=$OllamaModel done_reason=$($result.done_reason)"
     } catch {
-        Write-Warning "[$(Get-Date -Format 'HH:mm:ss')] Failed to unload model via Ollama API: $_"
+        Write-Log "[GAME_MODE] vram_unload=fail model=$OllamaModel err=$($_.Exception.GetType().Name)" "WARNING"
     }
 }
 
-Write-Host "=== Oko Game Watcher started ===" -ForegroundColor Cyan
-Write-Host "Game list source: $GamesFile (re-read every poll)"
-Write-Host "Candidate log: $CandidatesLog"
-Write-Host "Polling every $PollIntervalSec sec. Service under control: $ServiceToStop"
-Write-Host "Ollama: $OllamaUrl (model: $OllamaModel)"
+Write-Log "[GAME_WATCHER] started games=$GamesFile poll_s=$PollIntervalSec service=$ServiceToStop model=$OllamaModel candidate_cpu_pct=$CandidateCpuThreshold hot_polls=$CandidateHotPolls"
 
-$botSuspended = $false
+function Set-SuspendFlag {
+    param([string]$Game)
+    try {
+        $dir = Split-Path $SuspendFlag -Parent
+        if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        [System.IO.File]::WriteAllText($SuspendFlag, "$stamp game=$Game`r`n", $Utf8NoBom)
+    } catch {
+        Write-Log "[GAME_MODE] flag=write_fail err=$($_.Exception.GetType().Name)" "WARNING"
+    }
+}
+
+function Clear-SuspendFlag {
+    try {
+        if (Test-Path $SuspendFlag) { Remove-Item -Path $SuspendFlag -Force }
+    } catch {
+        Write-Log "[GAME_MODE] flag=remove_fail err=$($_.Exception.GetType().Name)" "WARNING"
+    }
+}
+
+# SUSPEND_FLAG: restore "bot stopped by watcher" across watcher restarts.
+$botSuspended = Test-Path $SuspendFlag
+if ($botSuspended) {
+    $flagText = ""
+    try { $flagText = ([System.IO.File]::ReadAllText($SuspendFlag)).Trim() } catch { }
+    Write-Log "[GAME_WATCHER] resume suspended=1 flag=($flagText) - OkoBot will be started when no game is running"
+}
+$startFailures = 0
 
 while ($true) {
     $gameNames = Get-GameList
     $detectedGame = Test-GameRunning -GameNames $gameNames
 
     if ($detectedGame -and -not $botSuspended) {
-        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Game detected: $detectedGame.exe - suspending $ServiceToStop" -ForegroundColor Yellow
+        Write-Log "[GAME_MODE] on game=$detectedGame - stopping $ServiceToStop"
         try {
             Stop-Service -Name $ServiceToStop -Force -ErrorAction Stop
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Service $ServiceToStop stopped."
+            Write-Log "[GAME_MODE] service=$ServiceToStop stopped"
         } catch {
-            Write-Warning "Failed to stop service $ServiceToStop - is this script running as administrator? $_"
+            Write-Log "[GAME_MODE] stop=fail service=$ServiceToStop err=$($_.Exception.GetType().Name) (administrator?)" "WARNING"
         }
         Unload-OllamaModel
+        Set-SuspendFlag -Game $detectedGame
         $botSuspended = $true
     }
     elseif (-not $detectedGame -and $botSuspended) {
-        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Game closed - restoring $ServiceToStop" -ForegroundColor Green
+        if ($startFailures -eq 0) { Write-Log "[GAME_MODE] off - starting $ServiceToStop" }
         try {
             Start-Service -Name $ServiceToStop -ErrorAction Stop
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Service $ServiceToStop started."
+            Write-Log "[GAME_MODE] service=$ServiceToStop started (attempts=$($startFailures + 1))"
+            Clear-SuspendFlag
+            $botSuspended = $false
+            $startFailures = 0
         } catch {
-            Write-Warning "Failed to start service $ServiceToStop - check manually: nssm.exe status $ServiceToStop. $_"
+            # START_RETRY: stay suspended -> this branch runs again on the next poll
+            $startFailures++
+            if ($startFailures -le 3 -or ($startFailures % 25) -eq 0) {
+                Write-Log "[GAME_MODE] start=fail n=$startFailures service=$ServiceToStop err=$($_.Exception.GetType().Name) retry_in_s=$PollIntervalSec" "WARNING"
+            }
         }
-        $botSuspended = $false
     }
 
     if (-not $detectedGame) {
@@ -199,7 +327,3 @@ while ($true) {
 
     Start-Sleep -Seconds $PollIntervalSec
 }
-
-
-
-

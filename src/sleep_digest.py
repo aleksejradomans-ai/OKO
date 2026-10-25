@@ -13,6 +13,10 @@
 (>= DRIFT_WINDOW_MIN ответов) против замороженной базы (первые
 BASELINE_DAYS дней и >= BASELINE_MIN_SAMPLES ответов). Порогов-решений нет.
 [VECTOR_S] в дрейф не входит: только агрегат vector_s в payload (наблюдение).
+[RAG_HYGIENE] (M7.4): числа dry-run-скана SQLite<->ChromaDB (последний за окно),
+число сканов, пропуски и типы сбоев; имён файлов/хэшей в строке нет.
+[EPOCH] (M7.3 /newepoch, D7): только счётчик и время последней смены эпохи.
+База дрейфа и S при смене эпохи не сбрасываются (решение Оператора 25.10).
 
 Ручной запуск (до подключения к JobQueue):
     python src\\sleep_digest.py --log <путь AppStderr> --dry-run
@@ -203,6 +207,89 @@ def _summary(st: dict) -> dict:
             "min": st["min"], "max": st["max"]}
 
 
+def _vs_num_field(kv: dict, key: str):
+    """Число из kv или None, если '-'/нет/не конечное (для [CTX])."""
+    v = kv.get(key)
+    if v is None or v == "-":
+        return None
+    try:
+        f = float(v)
+    except ValueError:
+        return None
+    return f if math.isfinite(f) else None
+
+
+def parse_ctx(message: str) -> Optional[dict]:
+    """Строка наблюдения окна: '[CTX] call=main pe=1213 ev=16 nctx=4096
+    fill=0.296 chars=3359'. pe/ev/fill/chars могут быть '-' -> None. None —
+    если это не [CTX]. Хвоста/текста нет."""
+    if not message.startswith("[CTX]"):
+        return None
+    kv = dict(_KV_RE.findall(message))
+    return {"call": kv.get("call", "?"),
+            "pe": _vs_num_field(kv, "pe"), "ev": _vs_num_field(kv, "ev"),
+            "nctx": _vs_num_field(kv, "nctx"), "fill": _vs_num_field(kv, "fill"),
+            "chars": _vs_num_field(kv, "chars")}
+
+
+def parse_depth(message: str) -> Optional[dict]:
+    """Строка сессии: '[DEPTH] turns=3 active_s=120.5 span_s=120.5 pause_s=2400'.
+    None — не [DEPTH] или битая (нет turns/active_s/span_s)."""
+    if not message.startswith("[DEPTH]"):
+        return None
+    kv = dict(_KV_RE.findall(message))
+    try:
+        return {"turns": int(float(kv["turns"])),
+                "active_s": float(kv["active_s"]), "span_s": float(kv["span_s"])}
+    except (KeyError, ValueError):
+        return None
+
+
+RAG_KEYS = ("rows", "missing", "partial", "orphans", "orphan_chunks", "no_hash")
+
+
+def parse_rag(message: str) -> Optional[dict]:
+    """'[RAG_HYGIENE] rows=12 missing=0 partial=1 orphans=2 orphan_chunks=9 no_hash=0'
+    -> {"kind":"scan", <числа>}; '... skip=unavailable' -> {"kind":"skip"};
+    '... fail=<Тип>' -> {"kind":"fail","type"}; иначе None (битая)."""
+    if not message.startswith("[RAG_HYGIENE]"):
+        return None
+    kv = dict(_KV_RE.findall(message))
+    if "fail" in kv:
+        ft = kv["fail"]
+        return {"kind": "fail", "type": ft if _FAIL_TYPE_RE.match(ft) else "?"}
+    if "skip" in kv:
+        return {"kind": "skip"}
+    out: dict = {"kind": "scan"}
+    try:
+        for k in RAG_KEYS:
+            v = int(kv[k])
+            if v < 0:
+                return None
+            out[k] = v
+    except (KeyError, ValueError):
+        return None
+    return out
+
+
+def parse_epoch(message: str) -> Optional[float]:
+    """Строка смены эпохи: '[EPOCH] new ts=<unix>' -> ts. None — не
+    [EPOCH] new или битое/не конечное ts. Субъекта и текста в строке нет."""
+    if not message.startswith("[EPOCH] new"):
+        return None
+    kv = dict(_KV_RE.findall(message))
+    try:
+        ts = float(kv["ts"])
+    except (KeyError, ValueError):
+        return None
+    return ts if math.isfinite(ts) and ts > 0 else None
+
+
+def _ctx_call_slot() -> dict:
+    return {"n": 0, "fill_ge_090": 0, "fill": _empty_stat(),
+            "pe": _empty_stat(), "chars": _empty_stat()}
+
+
 def _stat_add(st: dict, x: float) -> None:
     st["n"] += 1
     st["sum"] += x
@@ -224,6 +311,14 @@ def build_digest(lines: Iterable[str]) -> dict:
     stats = {k: _empty_stat() for k in _METRIC_NUM + ("len_log",)}
     share = {"cjk_pos": 0, "ad_low": 0, "rl_pos": 0}
     total = unparsed = bad_metrics = 0
+    ctx_calls: dict = {}
+    depth_stats = {k: _empty_stat() for k in ("turns", "active_s", "span_s")}
+    depth_n = depth_bad = 0
+    epoch_n = epoch_bad = 0
+    rag_n = rag_bad = rag_skip = 0
+    rag_fail: Counter = Counter()
+    rag_last: Optional[dict] = None
+    epoch_last: Optional[float] = None
     vs_stats = {k: _empty_stat() for k in _VS_NUM}
     vs_points: Counter = Counter()
     vs_fail: Counter = Counter()
@@ -247,6 +342,48 @@ def build_digest(lines: Iterable[str]) -> dict:
             tags[tm.group(1)] += 1
         for code in _ERR_RE.findall(msg):
             errs[code] += 1
+        if tm and tm.group(1) == "CTX":
+            cx = parse_ctx(msg)
+            if cx is not None:
+                slot = ctx_calls.setdefault(cx["call"], _ctx_call_slot())
+                slot["n"] += 1
+                if cx["fill"] is not None:
+                    _stat_add(slot["fill"], cx["fill"])
+                    slot["fill_ge_090"] += cx["fill"] >= 0.9
+                if cx["pe"] is not None:
+                    _stat_add(slot["pe"], cx["pe"])
+                if cx["chars"] is not None:
+                    _stat_add(slot["chars"], cx["chars"])
+            continue
+        if tm and tm.group(1) == "DEPTH":
+            dp = parse_depth(msg)
+            if dp is None:
+                depth_bad += 1
+            else:
+                depth_n += 1
+                for k in ("turns", "active_s", "span_s"):
+                    _stat_add(depth_stats[k], dp[k])
+            continue
+        if tm and tm.group(1) == "RAG_HYGIENE":
+            rg = parse_rag(msg)
+            if rg is None:
+                rag_bad += 1
+            elif rg["kind"] == "fail":
+                rag_fail[rg["type"]] += 1
+            elif rg["kind"] == "skip":
+                rag_skip += 1
+            else:
+                rag_n += 1
+                rag_last = {k: rg[k] for k in RAG_KEYS}
+            continue
+        if tm and tm.group(1) == "EPOCH":
+            ep = parse_epoch(msg)
+            if ep is None:
+                epoch_bad += 1
+            else:
+                epoch_n += 1
+                epoch_last = ep if epoch_last is None else max(epoch_last, ep)
+            continue
         if tm and tm.group(1) == "VECTOR_S":
             vs = parse_vector_s(msg)
             if vs is None:
@@ -299,6 +436,21 @@ def build_digest(lines: Iterable[str]) -> dict:
             "ms_max": (max(vs_ms) if vs_ms else None),
             "stats": vs_stats,
         },
+        "ctx": {
+            "calls": {call: {"n": d["n"], "fill_ge_090": d["fill_ge_090"],
+                             "fill": _summary(d["fill"]), "pe": _summary(d["pe"]),
+                             "chars": _summary(d["chars"])}
+                      for call, d in sorted(ctx_calls.items())},
+        },
+        "depth": {
+            "n": depth_n, "bad": depth_bad,
+            "turns": _summary(depth_stats["turns"]),
+            "active_s": _summary(depth_stats["active_s"]),
+            "span_s": _summary(depth_stats["span_s"]),
+        },
+        "epoch": {"n": epoch_n, "bad": epoch_bad, "last_ts": epoch_last},
+        "rag": {"n": rag_n, "bad": rag_bad, "skip": rag_skip,
+                "fails": sum(rag_fail.values()), "fail": dict(rag_fail), "last": rag_last},
     }
 
 
