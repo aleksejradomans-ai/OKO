@@ -250,7 +250,8 @@ class MemoryCore:
 
     def session_stats(self, subject_id: str, pause_s: float,
                       since_ts: Optional[float] = None,
-                      pause_within_epoch: bool = False) -> dict:
+                      pause_within_epoch: bool = False,
+                      engaged_gap_s: Optional[float] = None) -> dict:
         """Метрики текущей сессии субъекта. ТОЛЬКО чтение, без состояния в памяти.
         turns — число ответов; span_s — от первого до последнего; active_s — сумма
         интервалов между ответами, НЕ превышающих pause_s (длинные паузы вырезаны).
@@ -260,6 +261,8 @@ class MemoryCore:
         since_ts (M7.3, граница эпохи) — все ответы с ts >= since_ts; тогда active_s
         < span_s, если внутри эпохи были паузы > pause_s. pause_within_epoch=True —
         граница = более поздняя из (эпоха, пауза > pause_s): решение 2 ТЗ рубежа.
+        engaged_gap_s (этап 2, наблюдение) -> доп. ключ engaged_s: сумма интервалов
+        <= engaged_gap_s (плотный диалог); без параметра ключа нет (контракт этапа 1).
         Пустая история (или нет ответов после эпохи) -> нули."""
         with self._tx() as c:
             if since_ts is None:
@@ -272,8 +275,11 @@ class MemoryCore:
                     "AND ts >= ? ORDER BY ts DESC LIMIT 500",
                     (subject_id, float(since_ts))).fetchall()
         ts = [r[0] for r in rows]  # по убыванию: новые -> старые
+        zero = {"turns": 0, "active_s": 0.0, "span_s": 0.0}
+        if engaged_gap_s is not None:
+            zero["engaged_s"] = 0.0
         if not ts:
-            return {"turns": 0, "active_s": 0.0, "span_s": 0.0}
+            return zero
         cut_by_pause = since_ts is None or pause_within_epoch
         session = [ts[0]]
         for t in ts[1:]:
@@ -283,11 +289,14 @@ class MemoryCore:
         session.reverse()  # старые -> новые
         turns = len(session)
         if turns < 2:
-            return {"turns": turns, "active_s": 0.0, "span_s": 0.0}
+            return dict(zero, turns=turns)
         span_s = round(session[-1] - session[0], 1)
-        active_s = round(sum(b - a for a, b in zip(session, session[1:])
-                             if (b - a) <= pause_s), 1)
-        return {"turns": turns, "active_s": active_s, "span_s": span_s}
+        gaps = [b - a for a, b in zip(session, session[1:])]
+        out = {"turns": turns, "active_s": round(sum(g for g in gaps if g <= pause_s), 1),
+               "span_s": span_s}
+        if engaged_gap_s is not None:
+            out["engaged_s"] = round(sum(g for g in gaps if g <= engaged_gap_s), 1)
+        return out
 
     def inventory(self, subject_id: str) -> dict:
         """Детерминированный ответ на «что ты обо мне хранишь». Без LLM."""

@@ -239,10 +239,19 @@ def parse_depth(message: str) -> Optional[dict]:
         return None
     kv = dict(_KV_RE.findall(message))
     try:
-        return {"turns": int(float(kv["turns"])),
-                "active_s": float(kv["active_s"]), "span_s": float(kv["span_s"])}
+        out = {"turns": int(float(kv["turns"])),
+               "active_s": float(kv["active_s"]), "span_s": float(kv["span_s"])}
     except (KeyError, ValueError):
         return None
+    # этап 2 (25.10): engaged_s — необязательное поле; битое значение строку не портит
+    if "engaged_s" in kv:
+        try:
+            v = float(kv["engaged_s"])
+            if math.isfinite(v) and v >= 0:
+                out["engaged_s"] = v
+        except ValueError:
+            pass
+    return out
 
 
 RAG_KEYS = ("rows", "missing", "partial", "orphans", "orphan_chunks", "no_hash")
@@ -312,7 +321,7 @@ def build_digest(lines: Iterable[str]) -> dict:
     share = {"cjk_pos": 0, "ad_low": 0, "rl_pos": 0}
     total = unparsed = bad_metrics = 0
     ctx_calls: dict = {}
-    depth_stats = {k: _empty_stat() for k in ("turns", "active_s", "span_s")}
+    depth_stats = {k: _empty_stat() for k in ("turns", "active_s", "span_s", "engaged_s")}
     depth_n = depth_bad = 0
     epoch_n = epoch_bad = 0
     rag_n = rag_bad = rag_skip = 0
@@ -363,6 +372,8 @@ def build_digest(lines: Iterable[str]) -> dict:
                 depth_n += 1
                 for k in ("turns", "active_s", "span_s"):
                     _stat_add(depth_stats[k], dp[k])
+                if "engaged_s" in dp:
+                    _stat_add(depth_stats["engaged_s"], dp["engaged_s"])
             continue
         if tm and tm.group(1) == "RAG_HYGIENE":
             rg = parse_rag(msg)
@@ -447,6 +458,7 @@ def build_digest(lines: Iterable[str]) -> dict:
             "turns": _summary(depth_stats["turns"]),
             "active_s": _summary(depth_stats["active_s"]),
             "span_s": _summary(depth_stats["span_s"]),
+            "engaged_s": _summary(depth_stats["engaged_s"]),
         },
         "epoch": {"n": epoch_n, "bad": epoch_bad, "last_ts": epoch_last},
         "rag": {"n": rag_n, "bad": rag_bad, "skip": rag_skip,
@@ -490,23 +502,35 @@ def drift_score(window: Dict[str, dict], baseline: Dict[str, dict]) -> Tuple[flo
     return score, comps
 
 
-def evaluate_drift(ops: Optional[OpsDB], digest: dict, allow_freeze: bool) -> Tuple[Optional[float], str, dict]:
-    """-> (score|None, status, детали). status: no_metrics | baseline_pending | insufficient | ok."""
+def _after(window_start: Optional[float], since: Optional[float]) -> bool:
+    """BASELINE_SINCE: сводка целиком после границы (окно, начатое раньше, смешано -> нет)."""
+    return since is None or (window_start is not None and window_start >= since)
+
+
+def evaluate_drift(ops: Optional[OpsDB], digest: dict, allow_freeze: bool,
+                   baseline_since: Optional[float] = None) -> Tuple[Optional[float], str, dict]:
+    """-> (score|None, status, детали). status: no_metrics | baseline_pending | insufficient | ok.
+    baseline_since (25.10, смена identity): сводки с окном раньше границы не идут ни в
+    базу, ни в окно дрейфа. Уже замороженную базу не трогает."""
     cur_stats = digest["metrics"]["stats"]
     n_cur = cur_stats["ce"]["n"]
     w_end = digest["window_end"]
-    previous = ops.recent_digests(200) if ops else []
+    previous = [d for d in (ops.recent_digests(200) if ops else [])
+                if _after(d.window_start, baseline_since)]
+    cur_in = _after(digest["window_start"], baseline_since)
     baseline = ops.get_baseline() if ops else None
 
     if baseline is None:
         first = min([d.window_start for d in previous if d.window_start is not None]
-                    + ([digest["window_start"]] if digest["window_start"] is not None else []),
+                    + ([digest["window_start"]] if (cur_in and digest["window_start"] is not None) else []),
                     default=None)
-        all_stats = [d.payload["metrics"]["stats"] for d in previous] + [cur_stats]
+        all_stats = [d.payload["metrics"]["stats"] for d in previous] + ([cur_stats] if cur_in else [])
         merged = merge_stats(all_stats)
         samples = merged["ce"]["n"]
         span_days = ((w_end - first) / 86400.0) if (first is not None and w_end is not None) else 0.0
         details = {"baseline_samples": samples, "baseline_span_days": round(span_days, 2)}
+        if baseline_since is not None:
+            details["baseline_since"] = baseline_since
         if samples >= BASELINE_MIN_SAMPLES and span_days >= BASELINE_DAYS and allow_freeze and ops:
             if ops.freeze_baseline(first, w_end, samples, merged):
                 log.info("[DRIFT_BASELINE] frozen samples=%d span_days=%.1f", samples, span_days)
@@ -535,7 +559,7 @@ def evaluate_drift(ops: Optional[OpsDB], digest: dict, allow_freeze: bool) -> Tu
 
 # --- прогон -------------------------------------------------------------------
 def run_once(log_path: Path, ops_path: Path, dry_run: bool = False,
-             max_bytes: int = DEFAULT_MAX_BYTES) -> dict:
+             max_bytes: int = DEFAULT_MAX_BYTES, baseline_since: Optional[float] = None) -> dict:
     """Один цикл сна (M7.1+M7.2). dry_run: ничего не пишет; ops.db не создаётся."""
     log_path, ops_path = Path(log_path), Path(ops_path)
     source = str(log_path.resolve()).lower()
@@ -550,7 +574,8 @@ def run_once(log_path: Path, ops_path: Path, dry_run: bool = False,
             ops.save_cursor(source, rr.cursor)
         return {"status": "no_new_lines", "rotated": rr.rotated, "written": False}
 
-    score, dstatus, details = evaluate_drift(ops, digest, allow_freeze=not dry_run)
+    score, dstatus, details = evaluate_drift(ops, digest, allow_freeze=not dry_run,
+                                             baseline_since=baseline_since)
     digest["drift"] = details
     answers = digest["metrics"]["n"]
     row_id = None
@@ -609,6 +634,14 @@ def status_line(ops_path: Path) -> str:
     return f"SLEEP: {when} ответов={d.answers} drift={drift} ({d.drift_status}){extra}"
 
 
+def _env_float_or_none(name: str) -> Optional[float]:
+    raw = os.environ.get(name, "").strip()
+    try:
+        return float(raw) if raw else None
+    except ValueError:
+        return None
+
+
 def _default_ops_path() -> Path:
     return Path(__file__).resolve().parent.parent / "data" / "ops.db"
 
@@ -620,6 +653,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--max-mb", type=float, default=DEFAULT_MAX_BYTES / 1048576)
     ap.add_argument("--status", action="store_true")
+    ap.add_argument("--baseline-since", type=float, default=_env_float_or_none("OKO_DRIFT_BASELINE_SINCE"))
     a = ap.parse_args(argv)
     if a.status:
         print(status_line(Path(a.ops)))
@@ -629,7 +663,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     from logger import setup_logging  # точка входа CLI: единый формат проекта
     setup_logging()
-    res = run_once(Path(a.log), Path(a.ops), dry_run=a.dry_run, max_bytes=int(a.max_mb * 1048576))
+    res = run_once(Path(a.log), Path(a.ops), dry_run=a.dry_run, max_bytes=int(a.max_mb * 1048576),
+                   baseline_since=a.baseline_since)
     print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
     return 0
 

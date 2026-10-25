@@ -275,6 +275,25 @@ OKO_RUNTIME_NUM_CTX: int = _get_env_pos_int("OKO_RUNTIME_NUM_CTX", 4096)
 _depth_pause = _get_env_float("OKO_DEPTH_PAUSE_S", 2400.0)
 OKO_DEPTH_PAUSE_S: float = _depth_pause if _depth_pause > 0 else 2400.0
 
+# --- Этап 2 рубежа (наблюдение, 25.10) ---
+# engaged_s в [DEPTH]: сумма интервалов между ответами <= OKO_ENGAGED_GAP_S
+# («плотный диалог»). active_s/turns/span_s и OKO_DEPTH_PAUSE_S не меняются.
+_engaged = _get_env_float("OKO_ENGAGED_GAP_S", 300.0)
+OKO_ENGAGED_GAP_S: float = _engaged if _engaged > 0 else 300.0
+# Граница базы дрейфа (unix ts): сводки с окном раньше неё в базу не входят.
+# Пусто/битое -> None (база с первой сводки, как раньше). Значение — в .env
+# (смена identity 25.10 17:05), не в коде.
+def _get_env_float_or_none(name: str) -> "float | None":
+    raw = os.getenv(name, "").strip()
+    try:
+        return float(raw) if raw else None
+    except ValueError:
+        return None
+
+
+# Присваивание на верхнем уровне модуля: test_config_switches сверяет имена через ast.
+OKO_DRIFT_BASELINE_SINCE: "float | None" = _get_env_float_or_none("OKO_DRIFT_BASELINE_SINCE")
+
 # --- M7.4 RAG-гигиена во сне (только отчёт, лечение руками) ---
 # OKO_RAG_HYGIENE=0 -> скан SQLite<->ChromaDB перед сводкой сна не делается.
 OKO_RAG_HYGIENE: bool = os.getenv("OKO_RAG_HYGIENE", "1").strip().lower() not in ("0", "false", "no", "off")

@@ -466,10 +466,11 @@ def _log_depth(user_id: int) -> None:
         core = _get_memory()
         sid = core.resolve("telegram", str(user_id))
         pause = float(getattr(config, "OKO_DEPTH_PAUSE_S", 2400))
+        engaged_gap = float(getattr(config, "OKO_ENGAGED_GAP_S", 300))
         st = core.session_stats(sid, pause, since_ts=core.epoch_start(sid),
-                                pause_within_epoch=True)
-        logger.info("[DEPTH] turns=%d active_s=%.1f span_s=%.1f pause_s=%.0f",
-                    st["turns"], st["active_s"], st["span_s"], pause)
+                                pause_within_epoch=True, engaged_gap_s=engaged_gap)
+        logger.info("[DEPTH] turns=%d active_s=%.1f span_s=%.1f pause_s=%.0f engaged_s=%.1f gap_s=%.0f",
+                    st["turns"], st["active_s"], st["span_s"], pause, st["engaged_s"], engaged_gap)
     except Exception as e:
         logger.warning("[DEPTH] fail=%s %s", type(e).__name__, e)
 
@@ -1596,7 +1597,9 @@ async def sleep_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     _sleep_state["last_attempt"] = time.time()  # до await: повторный тик не войдёт
     await _log_rag_hygiene()  # M7.4: до run_once -> строка войдёт в эту же сводку
     try:
-        res = await asyncio.to_thread(sleep_digest.run_once, config.OKO_LOG_FILE, config.OPS_DB_PATH)
+        res = await asyncio.to_thread(
+            sleep_digest.run_once, config.OKO_LOG_FILE, config.OPS_DB_PATH,
+            baseline_since=getattr(config, "OKO_DRIFT_BASELINE_SINCE", None))
         if res.get("status") == "no_new_lines":
             logger.info("[SLEEP_DIGEST] no new log lines (rotated=%s)", res.get("rotated"))
     except Exception as e:
