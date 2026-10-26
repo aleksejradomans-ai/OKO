@@ -75,6 +75,10 @@ for _noisy_logger in ("httpx", "httpcore", "apscheduler"):
 
 HISTORY_LIMIT = 10  # последних сообщений (5 пар вопрос-ответ)
 LOOP_GUARD_WINDOW = 10  # P1: сколько последних событий сверять
+# P1_LOG: начало шаблона отказа identity (AEBF398B: «Не распознал запрос. Сформулируй
+# задачу.»), в нижнем регистре после нормализации. Только для флага tpl в логе.
+P1_TEMPLATE_PREFIX = "не распознал запрос"
+P1_NOTE = "(P1: повтор ответа — обмен не сохранён в память)"
 MAX_MSG_LEN = 4000
 
 # Тематические ярлыки для PDF/документов, выбираемые вручную кнопкой в
@@ -358,13 +362,19 @@ def _fetch_history(user_id: int, limit: int) -> list:
     return core.history(sid, limit, since_ts=core.epoch_start(sid))
 
 
-def _save_exchange(user_id: int, user_text: str, assistant_text: str) -> None:
+def _save_exchange(user_id: int, user_text: str, assistant_text: str) -> bool:
     """Пара реплик одной транзакцией в журнал ядра. Слой B внутри.
 
     P1 (петля самоповтора): если ответ дословно совпадает с одним из последних
     ответов, а вопрос другой — это признак, что модель воспроизводит историю/RAG,
     а не отвечает. Такой обмен НЕ пишется: иначе он увеличивает вес паттерна
-    в следующей истории (положительная обратная связь через память)."""
+    в следующей истории (положительная обратная связь через память).
+
+    P1_NOTE (26.10): возвращает False, если обмен НЕ записан (P1), иначе True --
+    вызывающий код сообщает Оператору, что вопрос не попал в историю.
+    P1_LOG (26.10): строка P1 самодостаточна для замера (без пары с Response routed):
+    tpl=1 -- ответ начинается с шаблона отказа identity, len -- длина
+    нормализованного ответа, back -- на сколько событий назад совпадение."""
     core = _get_memory()
     sid = core.resolve("telegram", str(user_id))
     norm = lambda t: " ".join(t.split()).lower()
@@ -378,11 +388,23 @@ def _save_exchange(user_id: int, user_text: str, assistant_text: str) -> None:
             if role == "assistant" and norm(content) == a_norm:
                 prev_q = recent[i - 1][1] if i > 0 and recent[i - 1][0] == "user" else None
                 if prev_q is None or norm(prev_q) != norm(user_text):
-                    logger.warning("P1 loop guard: repeated answer not persisted (user=%s)", user_id)
-                    return
+                    # Префикс строки не менять: по нему P1 ищут hud_state/sleep_digest/замер.
+                    logger.warning(
+                        "P1 loop guard: repeated answer not persisted (user=%s) tpl=%d len=%d back=%d",
+                        user_id, int(a_norm.startswith(P1_TEMPLATE_PREFIX)), len(a_norm),
+                        len(recent) - i,
+                    )
+                    return False
     core.record_exchange(
         Envelope("telegram", str(user_id), user_text), user_text, assistant_text
     )
+    return True
+
+
+def _with_p1_note(response: str, persisted) -> str:
+    """P1_NOTE: пометка в НАЧАЛЕ ответа (конец может обрезаться MAX_MSG_LEN),
+    только при явном False. None (заглушка в тестах/старый контракт) -- без пометки."""
+    return f"{P1_NOTE}\n{response}" if persisted is False else response
 
 
 def _is_error_marker(response) -> bool:
@@ -539,6 +561,7 @@ async def process_logic(
         logger.error(f"Governor execution failure for user={user_id}: {e}")
         return None
 
+    persisted = None  # P1_NOTE: False -> пометка Оператору; None -> без пометки
     if _is_error_marker(raw_response):
         # Сбой ядра — пользователь увидит маркер, но обмен в историю не
         # пишем (ни запрос, ни маркер): пара без настоящего ответа только
@@ -546,9 +569,9 @@ async def process_logic(
         logger.warning("[HISTORY_SKIPPED] Core returned %s for user=%s — exchange not persisted",
                        raw_response.strip()[:40], user_id)
     else:
-        await asyncio.to_thread(_save_exchange, user_id, sanitized_input, raw_response)
+        persisted = await asyncio.to_thread(_save_exchange, user_id, sanitized_input, raw_response)
         await asyncio.to_thread(_log_depth, user_id)
-    return _with_notice(raw_response, getattr(result, "incidents", None))
+    return _with_p1_note(_with_notice(raw_response, getattr(result, "incidents", None)), persisted)
 
 
 async def process_discuss_logic(
@@ -621,14 +644,15 @@ async def process_discuss_logic(
     # Префикс [/discuss:filename] в user_text — чтобы при последующем чтении
     # истории в обычном режиме было явно видно, что это был другой контур,
     # не обычный RAG-ответ.
+    persisted = None
     if _is_error_marker(raw_response):
         logger.warning("[HISTORY_SKIPPED] Discuss core returned %s for user=%s — exchange not persisted",
                        raw_response.strip()[:40], user_id)
     else:
-        await asyncio.to_thread(
+        persisted = await asyncio.to_thread(
             _save_exchange, user_id, f"[/discuss:{filename}] {sanitized_input}", raw_response
         )
-    return _with_notice(raw_response, getattr(result, "incidents", None))
+    return _with_p1_note(_with_notice(raw_response, getattr(result, "incidents", None)), persisted)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
