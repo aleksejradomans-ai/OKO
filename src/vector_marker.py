@@ -20,7 +20,14 @@ import math
 import time
 from typing import Awaitable, Callable, Optional, Sequence
 
-EMBED_TIMEOUT_S = 3.0    # эмбеддинг ответа (решение Оператора, 21.10)
+import config
+
+# Бюджет эмбеддинга ответа. Был 3.0 (решение Оператора, 21.10); замер 26.10
+# показал холодную загрузку bge-m3 4601 мс -> 29 fail=TimeoutError из 59 замеров
+# за неделю (тёплая 213-225 мс). Значение из .env (OKO_EMBED_TIMEOUT_S), откат
+# без правки кода. Читается на верхнем уровне: monkeypatch в тестах подменяет
+# атрибут модуля, observe() берёт его по имени в момент вызова.
+EMBED_TIMEOUT_S = float(getattr(config, "OKO_EMBED_TIMEOUT_S", 6.0))
 CORE_TIMEOUT_S = 20.0    # опорные векторы: первый расчёт может застать холодную загрузку bge-m3
 QUEUE_WAIT_S = 30.0      # ожидание общего GPU-семафора; дольше — замер пропускается
 MAX_CHARS = 2000         # Ollama-батч 2048 токенов (ошибка 500 на длинном вводе); 2000 символов — с запасом

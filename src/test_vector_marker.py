@@ -127,6 +127,33 @@ def test_timeout_is_warning(monkeypatch, caplog):
     assert caplog.records[-1].levelno == logging.WARNING
 
 
+def test_embed_timeout_comes_from_config():
+    """Переключатель живой: константа модуля = значение из config, не литерал."""
+    assert vm.EMBED_TIMEOUT_S == pytest.approx(float(config.OKO_EMBED_TIMEOUT_S))
+    assert vm.EMBED_TIMEOUT_S > 0
+    from pathlib import Path
+    src = Path(config.__file__).read_text(encoding="utf-8")
+    assert '_get_env_float("OKO_EMBED_TIMEOUT_S"' in src
+
+
+def test_embed_timeout_applies_to_answer_not_core(monkeypatch, caplog):
+    """EMBED_TIMEOUT_S режет только замер ответа; опорные идут по CORE_TIMEOUT_S."""
+    monkeypatch.setattr(vm, "EMBED_TIMEOUT_S", 0.05)
+    calls = []
+
+    async def embed(text):
+        calls.append(text)
+        if text.startswith("ответ"):
+            await asyncio.sleep(1.0)
+        return [1.0, 0.0, 0.0]
+
+    with caplog.at_level(logging.INFO, logger="test.vector_s"):
+        assert run(marker(embed).observe("ответ модели", "B")) is None
+    assert len(calls) == 3                             # опорные посчитались, упал замер ответа
+    assert "fail=TimeoutError" in caplog.records[-1].getMessage()
+    assert caplog.records[-1].levelno == logging.WARNING
+
+
 def test_gpu_busy_skips_and_releases(monkeypatch, caplog):
     monkeypatch.setattr(vm, "QUEUE_WAIT_S", 0.05)
 

@@ -248,6 +248,15 @@ SLEEP_CHECK_INTERVAL_S: float = _get_env_float("SLEEP_CHECK_INTERVAL_S", 300.0)
 # OKO_VECTOR_S=0 -> выключено (откат без правки кода). Модель -- OLLAMA_EMBED_MODEL.
 VECTOR_S_ENABLED: bool = os.getenv("OKO_VECTOR_S", "1").strip().lower() not in ("0", "false", "no", "off")
 
+# Бюджет эмбеддинга ответа в метрике S (vector_marker.EMBED_TIMEOUT_S).
+# Прежние 3.0 с не покрывали холодную загрузку bge-m3: замер 26.10 дал
+# 4601 мс на холодную и 213-225 мс на тёплую, из-за чего 29 из 59 замеров
+# за неделю падали с fail=TimeoutError. keep_alive не используем: модель
+# держала бы ~664 МБ VRAM и во время игр, против логики game_watcher.
+# Битое/неположительное -> дефолт. CORE_TIMEOUT_S (20 с) не трогаем.
+_embed_timeout = _get_env_float("OKO_EMBED_TIMEOUT_S", 6.0)
+OKO_EMBED_TIMEOUT_S: float = _embed_timeout if _embed_timeout > 0 else 6.0
+
 # --- Рубеж погружения, этап 1 (только наблюдение, порогов нет) ---
 # Битые/неположительные значения -> дефолт (наблюдение не роняет бота).
 # Имена атрибутов = имена в getattr(config, ...) governor/bot; сверяет
