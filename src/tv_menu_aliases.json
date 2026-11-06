@@ -1,0 +1,2257 @@
+{
+  "aliases": [
+    {
+      "target": "settings.general.power:Выкл. экран",
+      "key": [
+        {"stem": "выключ", "pos": "verb"},
+        {"stem": "отключ", "pos": "verb"},
+        {"stem": "погас", "pos": "verb"},
+        {"stem": "потуш", "pos": "verb"},
+        {"stem": "черн", "pos": "adj"},
+        {"stem": "темн", "pos": "adj"}
+      ],
+      "context": ["экран", "звук"],
+      "exact_words": ["выкл", "офф", "off"],
+      "requires_all": ["экран"],
+      "positive": [
+        "выключи экран",
+        "погаси экран",
+        "чёрный экран",
+        "экран выключи звук отсавь",
+        "vikljuci ekran"
+      ],
+      "negative": [
+        "формат экрана",
+        "раздел экран",
+        "выключи телевизор"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.general.power",
+      "key": [
+        {"stem": "питан", "pos": "noun"},
+        {"stem": "энергопотреблен", "pos": "noun"},
+        {"stem": "электропитан", "pos": "noun"},
+        {"stem": "энергосбережен", "pos": "noun"}
+      ],
+      "context": ["настройк", "меню", "раздел", "установк", "открой"],
+      "exact_words": [],
+      "requires_all": ["питан"],
+      "positive": [
+        "открой питание",
+        "питание и энергопотребление",
+        "настройки питания",
+        "настрйоки питания",
+        "nastrojki pitanija"
+      ],
+      "negative": [
+        "выключи экран",
+        "таймер сна",
+        "общие настройки"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.general.power:Таймер сна",
+      "key": [
+        {"stem": "спат", "pos": "verb"},
+        {"stem": "засыпан", "pos": "noun"},
+        {"stem": "засып", "pos": "verb"},
+        {"stem": "сонн", "pos": "adj"}
+      ],
+      "context": ["таймер", "настройк", "меню", "открой"],
+      "exact_words": ["сон", "сна", "сну"],
+      "requires_all": ["таймер"],
+      "positive": [
+        "таймер сна",
+        "открой таймер сна",
+        "поставь таймер на сон",
+        "открйо таймер сна",
+        "tajmer sna"
+      ],
+      "negative": [
+        "таймер автовыключения",
+        "таймер нет сигнала",
+        "поставь таймер"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.sound",
+      "key": [
+        {"stem": "звук", "pos": "noun"},
+        {"stem": "звуков", "pos": "adj"}
+      ],
+      "context": ["настройк", "меню", "раздел", "установк", "открой"],
+      "exact_words": [],
+      "requires_all": ["звук", "настройк"],
+      "positive": [
+        "настройки звука",
+        "открой настройки звука",
+        "раздел настройки звука",
+        "открйо настройки звука",
+        "nastrojki zvuka"
+      ],
+      "negative": [
+        "стиль звука",
+        "профиль звука",
+        "выключи звук"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.ambilight",
+      "key": [
+        {"stem": "амбилайт", "pos": "noun"},
+        {"stem": "ambilight", "pos": "noun"},
+        {"stem": "подсветк", "pos": "noun"}
+      ],
+      "context": ["настройк", "меню", "раздел", "установк", "открой"],
+      "exact_words": [],
+      "requires_all": ["настройк"],
+      "positive": [
+        "настройки подсветки",
+        "настройки амбилайт",
+        "настройки ambilight",
+        "открйо настройки подсветки",
+        "nastrojki podsvetki"
+      ],
+      "negative": [
+        "подсветка зелёная",
+        "стиль ambilight",
+        "персонализация подсветки"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.network",
+      "key": [
+        {"stem": "сеть", "pos": "noun"},
+        {"stem": "сети", "pos": "noun"},
+        {"stem": "сетев", "pos": "adj"}
+      ],
+      "context": ["настройк", "меню", "раздел", "установк", "открой"],
+      "exact_words": ["сеть", "сети", "сетью"],
+      "requires_all": [],
+      "positive": [
+        "открой сеть",
+        "настройки сети",
+        "раздел сеть",
+        "открйо раздел сеть",
+        "nastrojki seti"
+      ],
+      "negative": [
+        "открой bluetooth",
+        "сопряжение пульта ду",
+        "общие настройки"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.general.power:Процедура вкл...",
+      "key": [
+        {"stem": "процедур", "pos": "noun"},
+        {"stem": "включен", "pos": "noun"},
+        {"stem": "запуск", "pos": "noun"},
+        {"stem": "старт", "pos": "noun"}
+      ],
+      "context": ["настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["включен"],
+      "positive": [
+        "процедура включения",
+        "поведение при включении",
+        "что открывать при включении",
+        "процедуар включения",
+        "procedura vkljuchenija"
+      ],
+      "negative": [
+        "включи телевизор",
+        "выключи экран",
+        "таймер автовыключения"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.general.power:Таймер автовык...",
+      "key": [
+        {"stem": "автовыключен", "pos": "noun"},
+        {"stem": "автовыкл", "pos": "noun"},
+        {"stem": "автоотключен", "pos": "noun"}
+      ],
+      "context": ["таймер", "настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["таймер", "автовыкл"],
+      "positive": [
+        "таймер автовыключения",
+        "автовыключение по таймеру",
+        "меню таймера автовыключения",
+        "открйо таймер автовыключения",
+        "tajmer avtovikljuchenija"
+      ],
+      "negative": [
+        "таймер сна",
+        "таймер нет сигнала",
+        "поставь таймер"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.general.power:Таймер \"Нет сиг...\"",
+      "key": [
+        {"stem": "сигнал", "pos": "noun"},
+        {"stem": "отсутств", "pos": "noun"}
+      ],
+      "context": ["таймер", "настройк", "меню", "открой"],
+      "exact_words": ["нет"],
+      "requires_all": ["таймер", "сигнал"],
+      "positive": [
+        "таймер нет сигнала",
+        "таймер без сигнала",
+        "отключение по таймеру нет сигнала",
+        "открйо таймер нет сигнала",
+        "tajmer net signala"
+      ],
+      "negative": [
+        "таймер сна",
+        "таймер автовыключения",
+        "поставь таймер"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.sound:IntelliSound",
+      "key": [
+        {"stem": "intellisound", "pos": "noun"},
+        {"stem": "интеллисаунд", "pos": "noun"},
+        {"stem": "интелисаунд", "pos": "noun"}
+      ],
+      "context": ["звук", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": [],
+      "positive": [
+        "intellisound",
+        "открой intellisound",
+        "режим интеллисаунд",
+        "открой интелисаунд",
+        "otkroj intellisound"
+      ],
+      "negative": [
+        "стиль звука",
+        "профиль звука",
+        "калибровка помещения"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.sound:Стиль звука",
+      "key": [
+        {"stem": "звук", "pos": "noun"},
+        {"stem": "звуков", "pos": "adj"}
+      ],
+      "context": ["стил", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["стил", "звук"],
+      "positive": [
+        "стиль звука",
+        "открой стиль звука",
+        "поменяй стиль звука",
+        "открйо стиль звука",
+        "stilj zvuka"
+      ],
+      "negative": [
+        "стиль изображения",
+        "стиль ambilight",
+        "профиль звука"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.sound:Пользовательские нас...",
+      "key": [
+        {"stem": "пользовательск", "pos": "adj"},
+        {"stem": "ручн", "pos": "adj"},
+        {"stem": "индивидуальн", "pos": "adj"}
+      ],
+      "context": ["звук", "установк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["пользовательск", "звук"],
+      "positive": [
+        "пользовательские установки звука",
+        "пользовательский звук",
+        "пользовательские параметры звука",
+        "открйо пользовательский звук",
+        "poljzovateljskij zvuk"
+      ],
+      "negative": [
+        "дополнительные в звуке",
+        "настройки звука",
+        "стиль звука"
+      ],
+      "confidence": "low"
+    },
+    {
+      "target": "settings.sound:EasyLink 2.0",
+      "key": [
+        {"stem": "easylink", "pos": "noun"},
+        {"stem": "изилинк", "pos": "noun"}
+      ],
+      "context": ["звук", "раздел", "меню", "открой"],
+      "exact_words": ["2.0"],
+      "requires_all": ["easylink", "звук"],
+      "positive": [
+        "easylink 2.0 в звуке",
+        "easylink в разделе звук",
+        "открой easylink звука",
+        "открйо easylink в звуке",
+        "easylink zvuk"
+      ],
+      "negative": [
+        "общий тумблер easylink",
+        "пульт ду easylink",
+        "стиль звука"
+      ],
+      "confidence": "low"
+    },
+    {
+      "target": "settings.sound:DTS Play-Fi",
+      "key": [
+        {"stem": "play-fi", "pos": "noun"},
+        {"stem": "playfi", "pos": "noun"},
+        {"stem": "плейфай", "pos": "noun"},
+        {"stem": "плей-фай", "pos": "noun"}
+      ],
+      "context": ["звук", "меню", "открой"],
+      "exact_words": ["dts", "дтс"],
+      "requires_all": [],
+      "positive": [
+        "dts play-fi",
+        "открой dts",
+        "беспроводной dts playfi",
+        "открйо dts play-fi",
+        "otkroj dts playfi"
+      ],
+      "negative": [
+        "dolby atmos для наушников",
+        "intellisound",
+        "калибровка помещения"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.sound:Калибровка помещения",
+      "key": [
+        {"stem": "калибровк", "pos": "noun"},
+        {"stem": "помещен", "pos": "noun"},
+        {"stem": "комнат", "pos": "noun"},
+        {"stem": "акустик", "pos": "noun"}
+      ],
+      "context": ["звук", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["калибровк"],
+      "positive": [
+        "калибровка помещения",
+        "калибровка комнаты",
+        "калибровка акустики помещения",
+        "открйо калибровку помещения",
+        "kalibrovka pomewenija"
+      ],
+      "negative": [
+        "установка на подставке",
+        "профиль звука",
+        "стиль звука"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.sound:Установка ТВ",
+      "key": [
+        {"stem": "подставк", "pos": "noun"},
+        {"stem": "стен", "pos": "noun"},
+        {"stem": "размещен", "pos": "noun"}
+      ],
+      "context": ["установк", "звук", "меню", "открой"],
+      "exact_words": ["тв"],
+      "requires_all": ["установк", "подставк"],
+      "positive": [
+        "установка на подставке или стене",
+        "установка на стене или подставке",
+        "выбор подставка или стена установка",
+        "открйо установку на подставке",
+        "ustanovka na podstavke"
+      ],
+      "negative": [
+        "установка для магазина",
+        "установка антенны",
+        "расположение дом или магазин"
+      ],
+      "confidence": "low"
+    },
+    {
+      "target": "settings.sound:Дополнительные",
+      "key": [
+        {"stem": "дополнительн", "pos": "adj"},
+        {"stem": "расширен", "pos": "adj"}
+      ],
+      "context": ["звук", "меню", "раздел", "установк", "открой"],
+      "exact_words": [],
+      "requires_all": ["дополнительн", "звук"],
+      "positive": [
+        "дополнительные в звуке",
+        "дополнительные установки звука",
+        "расширенные дополнительные в звуке",
+        "открйо дополнительные в звуке",
+        "dopolniteljnije v zvuke"
+      ],
+      "negative": [
+        "дополнительные в подсветке",
+        "пользовательский звук",
+        "стиль звука"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.sound:Профиль звука",
+      "key": [
+        {"stem": "профил", "pos": "noun"},
+        {"stem": "персональн", "pos": "adj"}
+      ],
+      "context": ["звук", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["профил", "звук"],
+      "positive": [
+        "профиль звука",
+        "открой профиль звука",
+        "персональный профиль звука",
+        "открйо профиль звука",
+        "profilj zvuka"
+      ],
+      "negative": [
+        "профиль оператора",
+        "имя профиля для модуля",
+        "стиль звука"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.sound:Dolby Atmos для науш...",
+      "key": [
+        {"stem": "dolby", "pos": "noun"},
+        {"stem": "atmos", "pos": "noun"},
+        {"stem": "долби", "pos": "noun"},
+        {"stem": "атмос", "pos": "noun"},
+        {"stem": "наушник", "pos": "noun"}
+      ],
+      "context": ["звук", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["наушник"],
+      "positive": [
+        "dolby atmos для наушников",
+        "долби атмос в наушниках",
+        "меню наушников dolby atmos",
+        "открйо dolby atmos для наушников",
+        "dolby atmos naushniki"
+      ],
+      "negative": [
+        "dts play-fi",
+        "стиль звука",
+        "intellisound"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.ambilight:Стиль Ambilight",
+      "key": [
+        {"stem": "амбилайт", "pos": "noun"},
+        {"stem": "ambilight", "pos": "noun"},
+        {"stem": "подсветк", "pos": "noun"}
+      ],
+      "context": ["стил", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["стил"],
+      "positive": [
+        "стиль ambilight",
+        "стиль амбилайт в меню",
+        "выбор стиля подсветки",
+        "открйо стиль ambilight",
+        "stilj ambilight"
+      ],
+      "negative": [
+        "стиль изображения",
+        "стиль звука",
+        "подсветка музыка"
+      ],
+      "confidence": "low"
+    },
+    {
+      "target": "settings.ambilight:Персонализация Amb...",
+      "key": [
+        {"stem": "персонализац", "pos": "noun"},
+        {"stem": "индивидуализац", "pos": "noun"}
+      ],
+      "context": ["подсветк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["персонализац"],
+      "positive": [
+        "персонализация ambilight",
+        "персонализация подсветки",
+        "персонализация амбилайт",
+        "открйо персонализацию подсветки",
+        "personalizacija ambilight"
+      ],
+      "negative": [
+        "стиль ambilight",
+        "ambilight suite",
+        "дополнительные в подсветке"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.ambilight:Ambilight Suite",
+      "key": [
+        {"stem": "suite", "pos": "noun"},
+        {"stem": "сьют", "pos": "noun"},
+        {"stem": "сюит", "pos": "noun"}
+      ],
+      "context": ["подсветк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["suite"],
+      "positive": [
+        "ambilight suite",
+        "открой ambilight suite",
+        "режим ambilight suite",
+        "открйо ambilight suite",
+        "otkroj ambilight suite"
+      ],
+      "negative": [
+        "ambiscape",
+        "стиль ambilight",
+        "персонализация ambilight"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.ambilight:AmbiScape",
+      "key": [
+        {"stem": "ambiscape", "pos": "noun"},
+        {"stem": "амбискейп", "pos": "noun"},
+        {"stem": "амбискеип", "pos": "noun"}
+      ],
+      "context": ["подсветк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": [],
+      "positive": [
+        "ambiscape",
+        "открой ambiscape",
+        "режим амбискейп",
+        "открой амбискеип",
+        "otkroj ambiscape"
+      ],
+      "negative": [
+        "ambilight suite",
+        "стиль ambilight",
+        "поддержите свою команду"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.ambilight:Поддержите свою ком...",
+      "key": [
+        {"stem": "поддерж", "pos": "verb"},
+        {"stem": "команд", "pos": "noun"},
+        {"stem": "флаг", "pos": "noun"},
+        {"stem": "сборн", "pos": "noun"}
+      ],
+      "context": ["подсветк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["команд"],
+      "positive": [
+        "поддержите свою команду",
+        "флаг команды в подсветке",
+        "выбрать флаг команды",
+        "открйо поддержите свою команду",
+        "podderzhite svoju komandu"
+      ],
+      "negative": [
+        "персонализация ambilight",
+        "ambiscape",
+        "стиль ambilight"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.ambilight:Дополнительные",
+      "key": [
+        {"stem": "дополнительн", "pos": "adj"},
+        {"stem": "расширен", "pos": "adj"}
+      ],
+      "context": ["подсветк", "меню", "раздел", "открой"],
+      "exact_words": [],
+      "requires_all": ["дополнительн", "подсветк"],
+      "positive": [
+        "дополнительные в подсветке",
+        "дополнительные параметры подсветки",
+        "дополнительный раздел подсветки",
+        "открйо дополнительные в подсветке",
+        "dopolniteljnije v podsvetke"
+      ],
+      "negative": [
+        "дополнительные в звуке",
+        "настройки подсветки",
+        "стиль ambilight"
+      ],
+      "confidence": "low"
+    },
+    {
+      "target": "settings.network:Проводная или Wi-Fi",
+      "key": [
+        {"stem": "проводн", "pos": "adj"},
+        {"stem": "вайфа", "pos": "noun"},
+        {"stem": "wifi", "pos": "noun"},
+        {"stem": "wi-fi", "pos": "noun"}
+      ],
+      "context": ["настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": [],
+      "positive": [
+        "проводная или wi-fi",
+        "настройки wifi",
+        "подключение к вайфай",
+        "настрйоки wifi",
+        "nastrojki wifi"
+      ],
+      "negative": [
+        "открой bluetooth",
+        "сопряжение пульта ду",
+        "открой сеть"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.network:Bluetooth",
+      "key": [
+        {"stem": "bluetooth", "pos": "noun"},
+        {"stem": "блютуз", "pos": "noun"},
+        {"stem": "блютус", "pos": "noun"}
+      ],
+      "context": ["настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": [],
+      "positive": [
+        "bluetooth",
+        "открой блютуз",
+        "настройки bluetooth",
+        "открой блютус",
+        "otkroj bljutuz"
+      ],
+      "negative": [
+        "проводная или wi-fi",
+        "сопряжение пульта ду",
+        "открой сеть"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.network:Пульт ДУ",
+      "key": [
+        {"stem": "пульт", "pos": "noun"},
+        {"stem": "сопряжен", "pos": "noun"},
+        {"stem": "привязк", "pos": "noun"}
+      ],
+      "context": ["настройк", "меню", "открой"],
+      "exact_words": ["ду"],
+      "requires_all": ["пульт", "сопряжен"],
+      "positive": [
+        "сопряжение пульта ду",
+        "меню сопряжения пульта",
+        "открой сопряжение пульта",
+        "открйо сопряжение пульта",
+        "soprjazhenie pulta du"
+      ],
+      "negative": [
+        "пульт ду easylink",
+        "открой bluetooth",
+        "настройки сети"
+      ],
+      "confidence": "low"
+    },
+    {
+      "target": "settings.picture",
+      "key": [
+        {"stem": "изображен", "pos": "noun"},
+        {"stem": "картинк", "pos": "noun"}
+      ],
+      "context": ["настройк", "меню", "раздел", "установк", "открой"],
+      "exact_words": [],
+      "requires_all": ["раздел", "изображен"],
+      "positive": [
+        "раздел изображение",
+        "открой раздел изображения",
+        "меню раздела изображение",
+        "открйо раздел изображение",
+        "razdel izobrazhenija"
+      ],
+      "negative": [
+        "стиль изображения",
+        "формат изображения",
+        "быстрая настройка изображения"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.picture:Стиль изображ.",
+      "key": [
+        {"stem": "изображен", "pos": "noun"},
+        {"stem": "картинк", "pos": "noun"}
+      ],
+      "context": ["стил", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["стил", "изображен"],
+      "positive": [
+        "стиль изображения",
+        "открой стиль изображения",
+        "поменяй стиль изображения",
+        "открйо стиль изображения",
+        "stilj izobrazhenija"
+      ],
+      "negative": [
+        "стиль звука",
+        "стиль ambilight",
+        "автоматический стиль"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.picture:Автоматический стил...",
+      "key": [
+        {"stem": "автоматическ", "pos": "adj"},
+        {"stem": "автостил", "pos": "noun"}
+      ],
+      "context": ["стил", "картинк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["автоматическ", "стил"],
+      "positive": [
+        "автоматический стиль",
+        "открой автоматический стиль",
+        "автоматический стиль картинки",
+        "открйо автоматический стиль",
+        "avtomaticheskij stilj"
+      ],
+      "negative": [
+        "стиль изображения",
+        "восстановить стиль",
+        "подсветка авто"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.picture:Контрастность",
+      "key": [
+        {"stem": "контрастност", "pos": "noun"},
+        {"stem": "контраст", "pos": "noun"}
+      ],
+      "context": ["изображен", "настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["контрастност"],
+      "positive": [
+        "контрастность",
+        "открой контрастность",
+        "настройка контрастности",
+        "открйо контрастность",
+        "kontrastnostj"
+      ],
+      "negative": [
+        "четкость",
+        "цвет изображения",
+        "шум изображения"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.picture:Цвет",
+      "key": [
+        {"stem": "цвет", "pos": "noun"},
+        {"stem": "цветност", "pos": "noun"}
+      ],
+      "context": ["изображен", "картинк", "настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["цвет", "изображен"],
+      "positive": [
+        "цвет изображения",
+        "настройка цвета изображения",
+        "поменяй цвет изображения",
+        "открйо цвет изображения",
+        "cvet izobrazhenija"
+      ],
+      "negative": [
+        "подсветка красная",
+        "контрастность",
+        "четкость"
+      ],
+      "confidence": "low"
+    },
+    {
+      "target": "settings.picture:Четкость",
+      "key": [
+        {"stem": "четкост", "pos": "noun"},
+        {"stem": "резкост", "pos": "noun"}
+      ],
+      "context": ["изображен", "настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["четкост"],
+      "positive": [
+        "четкость",
+        "открой четкость",
+        "четкость изображения",
+        "открйо четкость",
+        "chetkostj"
+      ],
+      "negative": [
+        "контрастность",
+        "шум изображения",
+        "движение в изображении"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.picture:Шум изображения",
+      "key": [
+        {"stem": "шумоподавлен", "pos": "noun"},
+        {"stem": "шумодав", "pos": "noun"},
+        {"stem": "помех", "pos": "noun"},
+        {"stem": "зернистост", "pos": "noun"}
+      ],
+      "context": ["изображен", "картинк", "настройк", "меню", "открой"],
+      "exact_words": ["шум", "шума", "шумы", "шумов"],
+      "requires_all": ["изображен"],
+      "positive": [
+        "шум изображения",
+        "подавление шума изображения",
+        "шумоподавление изображения",
+        "открйо шум изображения",
+        "shum izobrazhenija"
+      ],
+      "negative": [
+        "четкость",
+        "движение в изображении",
+        "контрастность"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.picture:Движение",
+      "key": [
+        {"stem": "движен", "pos": "noun"},
+        {"stem": "плавност", "pos": "noun"},
+        {"stem": "уплавнялк", "pos": "noun"}
+      ],
+      "context": ["изображен", "настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["движен"],
+      "positive": [
+        "движение в изображении",
+        "настройки движения",
+        "плавность движения",
+        "открйо настройки движения",
+        "dvizhenie"
+      ],
+      "negative": [
+        "четкость",
+        "шум изображения",
+        "формат изображения"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.picture:Восстановить стиль из...",
+      "key": [
+        {"stem": "восстанов", "pos": "verb"},
+        {"stem": "сброс", "pos": "noun"}
+      ],
+      "context": ["стил", "картинк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["восстанов", "стил"],
+      "positive": [
+        "восстановить стиль",
+        "восстановить стиль картинки",
+        "восстановление стиля в меню",
+        "открйо восстановить стиль",
+        "vosstanovitj stilj"
+      ],
+      "negative": [
+        "стиль изображения",
+        "автоматический стиль",
+        "быстрая настройка изображения"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.picture:Быстрая настройка из...",
+      "key": [
+        {"stem": "быстр", "pos": "adj"},
+        {"stem": "мастер", "pos": "noun"}
+      ],
+      "context": ["настройк", "изображен", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["быстр", "изображен"],
+      "positive": [
+        "быстрая настройка изображения",
+        "мастер быстрой настройки изображения",
+        "быстро настроить изображение",
+        "открйо быструю настройку изображения",
+        "bistraja nastrojka izobrazhenija"
+      ],
+      "negative": [
+        "раздел изображение",
+        "стиль изображения",
+        "восстановить стиль"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.screen",
+      "key": [
+        {"stem": "экран", "pos": "noun"},
+        {"stem": "секц", "pos": "noun"},
+        {"stem": "диспле", "pos": "noun"}
+      ],
+      "context": ["раздел", "меню", "установк", "открой"],
+      "exact_words": [],
+      "requires_all": ["раздел", "экран"],
+      "positive": [
+        "раздел экран",
+        "открой раздел экран",
+        "раздел экран в установках",
+        "открйо раздел экран",
+        "razdel ekran"
+      ],
+      "negative": [
+        "выключи экран",
+        "формат изображения",
+        "настройки заставки"
+      ],
+      "confidence": "low"
+    },
+    {
+      "target": "settings.screen:Формат изображения",
+      "key": [
+        {"stem": "формат", "pos": "noun"},
+        {"stem": "масштаб", "pos": "noun"},
+        {"stem": "пропорц", "pos": "noun"},
+        {"stem": "соотношен", "pos": "noun"},
+        {"stem": "сторон", "pos": "noun"}
+      ],
+      "context": ["изображен", "экран", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["формат"],
+      "positive": [
+        "формат изображения",
+        "формат экрана",
+        "масштаб и формат изображения",
+        "открйо формат изображения",
+        "format izobrazhenija"
+      ],
+      "negative": [
+        "выключи экран",
+        "раздел экран",
+        "стиль изображения"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.channels",
+      "key": [
+        {"stem": "канал", "pos": "noun"},
+        {"stem": "телеканал", "pos": "noun"}
+      ],
+      "context": ["настройк", "меню", "раздел", "установк", "открой"],
+      "exact_words": [],
+      "requires_all": ["раздел", "канал"],
+      "positive": [
+        "раздел каналы",
+        "открой раздел каналы",
+        "меню раздела каналы",
+        "открйо раздел каналы",
+        "razdel kanali"
+      ],
+      "negative": [
+        "установка антенны",
+        "копирование списка каналов",
+        "телепрограмма"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.channels:Установка антенн...",
+      "key": [
+        {"stem": "антенн", "pos": "noun"},
+        {"stem": "кабельн", "pos": "adj"},
+        {"stem": "dvb-t", "pos": "noun"},
+        {"stem": "dvb-c", "pos": "noun"}
+      ],
+      "context": ["установк", "канал", "настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["антенн"],
+      "positive": [
+        "установка антенны",
+        "настройка антенных каналов",
+        "антенна или кабель",
+        "открйо установку антенны",
+        "ustanovka antenni"
+      ],
+      "negative": [
+        "установка спутника",
+        "копирование списка каналов",
+        "раздел каналы"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.channels:Установка спутн...",
+      "key": [
+        {"stem": "спутник", "pos": "noun"},
+        {"stem": "спутников", "pos": "adj"},
+        {"stem": "тарелк", "pos": "noun"},
+        {"stem": "dvb-s", "pos": "noun"}
+      ],
+      "context": ["установк", "канал", "настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["спутник"],
+      "positive": [
+        "установка спутника",
+        "спутниковые каналы",
+        "настройка спутника",
+        "открйо установку спутника",
+        "ustanovka sputnika"
+      ],
+      "negative": [
+        "установка антенны",
+        "профиль оператора",
+        "раздел каналы"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.channels:Профиль операт...",
+      "key": [
+        {"stem": "профил", "pos": "noun"},
+        {"stem": "оператор", "pos": "noun"},
+        {"stem": "провайдер", "pos": "noun"}
+      ],
+      "context": ["канал", "настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["профил", "оператор"],
+      "positive": [
+        "профиль оператора",
+        "выбор профиля оператора",
+        "профиль оператора каналов",
+        "открйо профиль оператора",
+        "profilj operatora"
+      ],
+      "negative": [
+        "профиль звука",
+        "имя профиля для модуля",
+        "интерфейс cam"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.channels:Имя профиля для мо...",
+      "key": [
+        {"stem": "имен", "pos": "noun"},
+        {"stem": "назван", "pos": "noun"},
+        {"stem": "модул", "pos": "noun"}
+      ],
+      "context": ["профил", "канал", "настройк", "меню", "открой"],
+      "exact_words": ["имя", "имени", "именем"],
+      "requires_all": ["профил", "модул"],
+      "positive": [
+        "имя профиля для модуля",
+        "профиль для модуля",
+        "имя профиля модуля",
+        "открйо имя профиля для модуля",
+        "imja profilja dlja modulja"
+      ],
+      "negative": [
+        "профиль оператора",
+        "профиль звука",
+        "интерфейс cam"
+      ],
+      "confidence": "low"
+    },
+    {
+      "target": "settings.channels:Установки HbbTV",
+      "key": [
+        {"stem": "hbbtv", "pos": "noun"},
+        {"stem": "хббтв", "pos": "noun"}
+      ],
+      "context": ["установк", "настройк", "канал", "меню", "открой"],
+      "exact_words": ["hbb"],
+      "requires_all": ["hbbtv"],
+      "positive": [
+        "установки hbbtv",
+        "настройки hbbtv",
+        "открой hbbtv",
+        "открйо установки hbbtv",
+        "ustanovki hbbtv"
+      ],
+      "negative": [
+        "интерфейс cam",
+        "установка антенны",
+        "раздел каналы"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.channels:Интерфейс CAM",
+      "key": [
+        {"stem": "интерфейс", "pos": "noun"},
+        {"stem": "pcmcia", "pos": "noun"},
+        {"stem": "слот", "pos": "noun"}
+      ],
+      "context": ["канал", "настройк", "меню", "открой"],
+      "exact_words": ["cam", "кам"],
+      "requires_all": ["интерфейс"],
+      "positive": [
+        "интерфейс cam",
+        "открой интерфейс cam",
+        "слот интерфейса cam",
+        "открйо интерфейс cam",
+        "interfejs cam"
+      ],
+      "negative": [
+        "имя профиля для модуля",
+        "установки hbbtv",
+        "копирование списка каналов"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.channels:Копирование списка к...",
+      "key": [
+        {"stem": "копирован", "pos": "noun"},
+        {"stem": "скопир", "pos": "verb"},
+        {"stem": "список", "pos": "noun"},
+        {"stem": "списк", "pos": "noun"}
+      ],
+      "context": ["канал", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["копирован", "канал"],
+      "positive": [
+        "копирование списка каналов",
+        "копирование каналов на флешку",
+        "меню копирования каналов",
+        "открйо копирование списка каналов",
+        "kopirovanie spiska kanalov"
+      ],
+      "negative": [
+        "раздел каналы",
+        "установка антенны",
+        "профиль оператора"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.general",
+      "key": [
+        {"stem": "системн", "pos": "adj"},
+        {"stem": "базов", "pos": "adj"}
+      ],
+      "context": ["настройк", "установк", "раздел", "меню", "открой"],
+      "exact_words": ["общие", "общих", "общий", "общее", "общую", "общим"],
+      "requires_all": ["настройк"],
+      "positive": [
+        "общие настройки",
+        "открой общие настройки",
+        "раздел общие настройки",
+        "открйо общие настройки",
+        "obwie nastrojki"
+      ],
+      "negative": [
+        "главное меню установок",
+        "настройки питания",
+        "настройки клавиатуры"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.general:Настройки клав...",
+      "key": [
+        {"stem": "клавиатур", "pos": "noun"},
+        {"stem": "раскладк", "pos": "noun"}
+      ],
+      "context": ["настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["клавиатур"],
+      "positive": [
+        "настройки клавиатуры",
+        "открой настройки клавиатуры",
+        "раскладка клавиатуры",
+        "открйо настройки клавиатуры",
+        "nastrojki klaviaturi"
+      ],
+      "negative": [
+        "установки мыши",
+        "общие настройки",
+        "язык меню"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.general:Установки мыши",
+      "key": [
+        {"stem": "мышь", "pos": "noun"},
+        {"stem": "мыши", "pos": "noun"},
+        {"stem": "мышк", "pos": "noun"},
+        {"stem": "курсор", "pos": "noun"},
+        {"stem": "указател", "pos": "noun"}
+      ],
+      "context": ["установк", "настройк", "меню", "открой"],
+      "exact_words": ["мышь", "мыши", "мышью"],
+      "requires_all": [],
+      "positive": [
+        "установки мыши",
+        "настройки мыши",
+        "скорость курсора мыши",
+        "открйо установки мыши",
+        "ustanovki mishi"
+      ],
+      "negative": [
+        "настройки клавиатуры",
+        "сопряжение пульта ду",
+        "общие настройки"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.general:EasyLink",
+      "key": [
+        {"stem": "easylink", "pos": "noun"},
+        {"stem": "изилинк", "pos": "noun"},
+        {"stem": "тумблер", "pos": "noun"}
+      ],
+      "context": ["настройк", "меню", "открой"],
+      "exact_words": ["общие", "общих", "общий"],
+      "requires_all": ["easylink", "тумблер"],
+      "positive": [
+        "общий тумблер easylink",
+        "тумблер easylink в меню",
+        "переключить тумблер easylink",
+        "открйо тумблер easylink",
+        "tumbler easylink"
+      ],
+      "negative": [
+        "пульт ду easylink",
+        "easylink 2.0 в звуке",
+        "общие настройки"
+      ],
+      "confidence": "low"
+    },
+    {
+      "target": "settings.general:Пульт ДУ EasyLink",
+      "key": [
+        {"stem": "пульт", "pos": "noun"},
+        {"stem": "управлен", "pos": "noun"}
+      ],
+      "context": ["easylink", "изилинк", "настройк", "меню", "открой"],
+      "exact_words": ["ду"],
+      "requires_all": ["пульт", "easylink"],
+      "positive": [
+        "пульт ду easylink",
+        "управление пультом easylink",
+        "настройка пульта easylink",
+        "открйо пульт ду easylink",
+        "pult du easylink"
+      ],
+      "negative": [
+        "сопряжение пульта ду",
+        "общий тумблер easylink",
+        "easylink 2.0 в звуке"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.general:Apple AirPlay и H...",
+      "key": [
+        {"stem": "airplay", "pos": "noun"},
+        {"stem": "homekit", "pos": "noun"},
+        {"stem": "apple", "pos": "noun"},
+        {"stem": "эйрплей", "pos": "noun"},
+        {"stem": "эирплей", "pos": "noun"},
+        {"stem": "хоумкит", "pos": "noun"}
+      ],
+      "context": ["настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["airplay"],
+      "positive": [
+        "apple airplay и homekit",
+        "открой airplay",
+        "настройки airplay",
+        "открйо apple airplay",
+        "otkroj airplay"
+      ],
+      "negative": [
+        "hdmi ultra hd",
+        "открой bluetooth",
+        "общие настройки"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.general:Настройки заста...",
+      "key": [
+        {"stem": "заставк", "pos": "noun"},
+        {"stem": "скринсейвер", "pos": "noun"},
+        {"stem": "screensaver", "pos": "noun"}
+      ],
+      "context": ["настройк", "экран", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["заставк"],
+      "positive": [
+        "настройки заставки",
+        "открой заставку",
+        "меню заставки",
+        "открйо настройки заставки",
+        "nastrojki zastavki"
+      ],
+      "negative": [
+        "выключи экран",
+        "таймер сна",
+        "общие настройки"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.general:Расположение",
+      "key": [
+        {"stem": "расположен", "pos": "noun"},
+        {"stem": "локац", "pos": "noun"}
+      ],
+      "context": ["настройк", "меню", "открой"],
+      "exact_words": ["дом"],
+      "requires_all": ["расположен"],
+      "positive": [
+        "расположение дом или магазин",
+        "пункт расположение",
+        "выбор расположения",
+        "открйо пункт расположение",
+        "raspolozhenie"
+      ],
+      "negative": [
+        "установка для магазина",
+        "установка на подставке",
+        "регион и язык"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.general:Установка для м...",
+      "key": [
+        {"stem": "магазин", "pos": "noun"},
+        {"stem": "витрин", "pos": "noun"},
+        {"stem": "демо", "pos": "noun"}
+      ],
+      "context": ["установк", "настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["установк", "магазин"],
+      "positive": [
+        "установка для магазина",
+        "параметры установки для магазина",
+        "режим установки для магазина",
+        "открйо установку для магазина",
+        "ustanovka dlja magazina"
+      ],
+      "negative": [
+        "расположение дом или магазин",
+        "установка на подставке или стене",
+        "общие настройки"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.general:Изменить источ...",
+      "key": [
+        {"stem": "измен", "pos": "verb"},
+        {"stem": "переимен", "pos": "verb"},
+        {"stem": "источник", "pos": "noun"}
+      ],
+      "context": ["настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["измен", "источник"],
+      "positive": [
+        "изменить источники",
+        "изменить источники входа",
+        "меню изменить источники",
+        "открйо изменить источники",
+        "izmenitj istochniki"
+      ],
+      "negative": [
+        "вкладка источники",
+        "источник",
+        "hdmi ultra hd"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.general:HDMI Ultra HD",
+      "key": [
+        {"stem": "hdmi", "pos": "noun"},
+        {"stem": "ultra", "pos": "adj"},
+        {"stem": "ультра", "pos": "adj"}
+      ],
+      "context": ["настройк", "меню", "открой"],
+      "exact_words": ["4k", "4к", "hd", "uhd"],
+      "requires_all": ["hdmi"],
+      "positive": [
+        "hdmi ultra hd",
+        "настройки hdmi ultra hd",
+        "режим hdmi 4k ultra hd",
+        "открйо hdmi ultra hd",
+        "otkroj hdmi ultra hd"
+      ],
+      "negative": [
+        "изменить источники",
+        "общий тумблер easylink",
+        "формат изображения"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.access",
+      "key": [
+        {"stem": "универсальн", "pos": "adj"},
+        {"stem": "доступ", "pos": "noun"},
+        {"stem": "спецвозможност", "pos": "noun"}
+      ],
+      "context": ["раздел", "меню", "настройк", "открой"],
+      "exact_words": [],
+      "requires_all": ["раздел", "универсальн", "доступ"],
+      "positive": [
+        "раздел универсальный доступ",
+        "открой раздел универсальный доступ",
+        "меню раздел универсальный доступ",
+        "открйо раздел универсальный доступ",
+        "razdel universaljnij dostup"
+      ],
+      "negative": [
+        "тумблер универсальный доступ",
+        "нарушения слуха",
+        "усиление речи"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.access:Универсальный доступ",
+      "key": [
+        {"stem": "тумблер", "pos": "noun"},
+        {"stem": "переключател", "pos": "noun"},
+        {"stem": "универсальн", "pos": "adj"},
+        {"stem": "доступ", "pos": "noun"}
+      ],
+      "context": ["меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["тумблер", "универсальн", "доступ"],
+      "positive": [
+        "тумблер универсальный доступ",
+        "пункт тумблер универсального доступа",
+        "включить тумблер универсальный доступ",
+        "открйо тумблер универсальный доступ",
+        "tumbler universaljnij dostup"
+      ],
+      "negative": [
+        "раздел универсальный доступ",
+        "описание аудио",
+        "увеличение текста"
+      ],
+      "confidence": "low"
+    },
+    {
+      "target": "settings.access:Нарушения слуха",
+      "key": [
+        {"stem": "нарушен", "pos": "noun"},
+        {"stem": "слух", "pos": "noun"},
+        {"stem": "слабослышащ", "pos": "adj"}
+      ],
+      "context": ["меню", "настройк", "открой"],
+      "exact_words": [],
+      "requires_all": ["слух"],
+      "positive": [
+        "нарушения слуха",
+        "режим для слабослышащих слух",
+        "доступ при нарушении слуха",
+        "открйо нарушения слуха",
+        "narushenija sluha"
+      ],
+      "negative": [
+        "описание аудио",
+        "усиление речи",
+        "раздел универсальный доступ"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.access:Описание аудио",
+      "key": [
+        {"stem": "описан", "pos": "noun"},
+        {"stem": "аудио", "pos": "noun"},
+        {"stem": "аудиодескрипц", "pos": "noun"}
+      ],
+      "context": ["меню", "настройк", "открой"],
+      "exact_words": [],
+      "requires_all": ["описан", "аудио"],
+      "positive": [
+        "описание аудио",
+        "голосовое описание аудио",
+        "включить описание аудио",
+        "открйо описание аудио",
+        "opisanie audio"
+      ],
+      "negative": [
+        "усиление речи",
+        "нарушения слуха",
+        "настройки звука"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.access:Усиление речи",
+      "key": [
+        {"stem": "усилен", "pos": "noun"},
+        {"stem": "речь", "pos": "noun"},
+        {"stem": "речи", "pos": "noun"},
+        {"stem": "разборчивост", "pos": "noun"},
+        {"stem": "диалог", "pos": "noun"}
+      ],
+      "context": ["меню", "настройк", "открой"],
+      "exact_words": ["речь", "речи", "речью"],
+      "requires_all": ["усилен"],
+      "positive": [
+        "усиление речи",
+        "разборчивость и усиление речи",
+        "усиление диалогов и речи",
+        "открйо усиление речи",
+        "usilenie rechi"
+      ],
+      "negative": [
+        "описание аудио",
+        "нарушения слуха",
+        "стиль звука"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.access:Увеличение текста",
+      "key": [
+        {"stem": "увеличен", "pos": "noun"},
+        {"stem": "текст", "pos": "noun"},
+        {"stem": "шрифт", "pos": "noun"},
+        {"stem": "крупн", "pos": "adj"}
+      ],
+      "context": ["меню", "настройк", "открой"],
+      "exact_words": [],
+      "requires_all": ["увеличен", "текст"],
+      "positive": [
+        "увеличение текста",
+        "крупный шрифт увеличение текста",
+        "настройка увеличения текста",
+        "открйо увеличение текста",
+        "uvelichenie teksta"
+      ],
+      "negative": [
+        "формат изображения",
+        "четкость",
+        "раздел универсальный доступ"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.parental",
+      "key": [
+        {"stem": "детей", "pos": "noun"},
+        {"stem": "детск", "pos": "adj"},
+        {"stem": "защит", "pos": "noun"}
+      ],
+      "context": ["блокировк", "раздел", "меню", "настройк", "открой"],
+      "exact_words": ["дети", "детей", "детям", "детьми"],
+      "requires_all": ["детей"],
+      "positive": [
+        "блокировка от детей",
+        "защита от детей",
+        "раздел блокировка от детей",
+        "открйо блокировку от детей",
+        "blokirovka ot detej"
+      ],
+      "negative": [
+        "родительский контроль",
+        "блокировка приложений",
+        "установить код"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.parental:Родительский контроль",
+      "key": [
+        {"stem": "родительск", "pos": "adj"},
+        {"stem": "контрол", "pos": "noun"},
+        {"stem": "возрастн", "pos": "adj"}
+      ],
+      "context": ["меню", "настройк", "открой"],
+      "exact_words": [],
+      "requires_all": ["родительск", "контрол"],
+      "positive": [
+        "родительский контроль",
+        "возрастной родительский контроль",
+        "открой родительский контроль",
+        "открйо родительский контроль",
+        "roditeljskij kontrolj"
+      ],
+      "negative": [
+        "блокировка от детей",
+        "блокировка приложений",
+        "установить код"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.parental:Блокировка приложе...",
+      "key": [
+        {"stem": "блокировк", "pos": "noun"},
+        {"stem": "заблок", "pos": "verb"},
+        {"stem": "приложен", "pos": "noun"}
+      ],
+      "context": ["меню", "настройк", "открой"],
+      "exact_words": [],
+      "requires_all": ["блокировк", "приложен"],
+      "positive": [
+        "блокировка приложений",
+        "меню блокировки приложений",
+        "блокировка приложе...",
+        "открйо блокировку приложений",
+        "blokirovka prilozhenij"
+      ],
+      "negative": [
+        "вкладка приложения",
+        "блокировка от детей",
+        "родительский контроль"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.parental:Установить код",
+      "key": [
+        {"stem": "установ", "pos": "verb"},
+        {"stem": "смен", "pos": "verb"},
+        {"stem": "пин-код", "pos": "noun"},
+        {"stem": "пинкод", "pos": "noun"},
+        {"stem": "парол", "pos": "noun"}
+      ],
+      "context": ["меню", "настройк", "открой"],
+      "exact_words": ["код", "кода", "коду", "кодом", "пин", "pin", "kod"],
+      "requires_all": ["установ"],
+      "positive": [
+        "установить код",
+        "установить пин-код",
+        "установить пароль",
+        "открйо установить код",
+        "ustanovitj kod"
+      ],
+      "negative": [
+        "родительский контроль",
+        "блокировка от детей",
+        "блокировка приложений"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.region",
+      "key": [
+        {"stem": "регион", "pos": "noun"},
+        {"stem": "стран", "pos": "noun"},
+        {"stem": "локализац", "pos": "noun"}
+      ],
+      "context": ["раздел", "настройк", "меню", "открой"],
+      "exact_words": [],
+      "requires_all": ["регион"],
+      "positive": [
+        "регион и язык",
+        "раздел регион",
+        "настройки региона",
+        "открйо раздел регион",
+        "region i jazik"
+      ],
+      "negative": [
+        "язык меню",
+        "открой часы",
+        "расположение дом или магазин"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.region:Язык",
+      "key": [
+        {"stem": "язык", "pos": "noun"},
+        {"stem": "языков", "pos": "adj"},
+        {"stem": "выбор", "pos": "noun"}
+      ],
+      "context": ["меню", "настройк", "открой"],
+      "exact_words": [],
+      "requires_all": ["язык", "меню"],
+      "positive": [
+        "язык меню",
+        "поменять язык меню",
+        "выбор языка меню",
+        "открйо язык меню",
+        "jazik menju"
+      ],
+      "negative": [
+        "регион и язык",
+        "настройки клавиатуры",
+        "открой часы"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.region:Часы",
+      "key": [
+        {"stem": "часы", "pos": "noun"},
+        {"stem": "часов", "pos": "noun"},
+        {"stem": "врем", "pos": "noun"},
+        {"stem": "времен", "pos": "noun"}
+      ],
+      "context": ["настройк", "меню", "открой"],
+      "exact_words": ["часы", "часов", "часам", "часами", "часах"],
+      "requires_all": ["часы"],
+      "positive": [
+        "настройки часы",
+        "открой часы",
+        "часы и время",
+        "открйо часы и время",
+        "otkroj chasi"
+      ],
+      "negative": [
+        "таймер сна",
+        "таймер автовыключения",
+        "регион и язык"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "settings.update",
+      "key": [
+        {"stem": "обнов", "pos": "verb"},
+        {"stem": "прошивк", "pos": "noun"},
+        {"stem": "софт", "pos": "noun"},
+        {"stem": "апдейт", "pos": "noun"}
+      ],
+      "context": ["настройк", "меню", "открой"],
+      "exact_words": ["по"],
+      "requires_all": ["обнов"],
+      "positive": [
+        "обновить по",
+        "обновление прошивки",
+        "проверить обновления",
+        "открйо обновить по",
+        "obnovitj po"
+      ],
+      "negative": [
+        "общие настройки",
+        "восстановить стиль",
+        "главное меню установок"
+      ],
+      "confidence": "low"
+    },
+    {
+      "target": "home.topbar:Домашняя",
+      "key": [
+        {"stem": "домашн", "pos": "adj"},
+        {"stem": "страниц", "pos": "noun"}
+      ],
+      "context": ["вкладк", "экран", "открой"],
+      "exact_words": [],
+      "requires_all": ["домашн", "вкладк"],
+      "positive": [
+        "домашняя вкладка",
+        "открой вкладку домашняя",
+        "вкладка домашняя",
+        "открйо домашнюю вкладку",
+        "domashnjaja vkladka"
+      ],
+      "negative": [
+        "домой",
+        "расположение дом или магазин",
+        "вкладка игры"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "home.topbar:Игры",
+      "key": [
+        {"stem": "игров", "pos": "adj"},
+        {"stem": "гейминг", "pos": "noun"}
+      ],
+      "context": ["вкладк", "открой"],
+      "exact_words": ["игры", "игр", "игре", "играми", "играх", "igri"],
+      "requires_all": ["вкладк"],
+      "positive": [
+        "вкладка игры",
+        "открой вкладку игры",
+        "игровая вкладка сверху",
+        "открйо вкладку игры",
+        "vkladka igri"
+      ],
+      "negative": [
+        "подсветка игра",
+        "вкладка приложения",
+        "вкладка бесплатно"
+      ],
+      "confidence": "low"
+    },
+    {
+      "target": "home.topbar:Бесплатно",
+      "key": [
+        {"stem": "бесплатн", "pos": "adj"}
+      ],
+      "context": ["вкладк", "раздел", "открой"],
+      "exact_words": [],
+      "requires_all": ["бесплатн"],
+      "positive": [
+        "вкладка бесплатно",
+        "открой бесплатно",
+        "раздел бесплатно сверху",
+        "открйо вкладку бесплатно",
+        "vkladka besplatno"
+      ],
+      "negative": [
+        "вкладка игры",
+        "вкладка приложения",
+        "телепрограмма"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "home.topbar:Приложения",
+      "key": [
+        {"stem": "приложен", "pos": "noun"}
+      ],
+      "context": ["вкладк", "открой"],
+      "exact_words": [],
+      "requires_all": ["приложен", "вкладк"],
+      "positive": [
+        "вкладка приложения",
+        "открой вкладку приложения",
+        "вкладка приложения на верхней панели",
+        "открйо вкладку приложения",
+        "vkladka prilozhenija"
+      ],
+      "negative": [
+        "блокировка приложений",
+        "открой ютуб",
+        "портал"
+      ],
+      "confidence": "low"
+    },
+    {
+      "target": "home.topbar:Телепрограмма",
+      "key": [
+        {"stem": "телепрограмм", "pos": "noun"},
+        {"stem": "телегид", "pos": "noun"}
+      ],
+      "context": ["вкладк", "открой"],
+      "exact_words": ["epg", "епг", "гид"],
+      "requires_all": ["телепрограмм"],
+      "positive": [
+        "телепрограмма",
+        "открой телепрограмму",
+        "вкладка телепрограмма",
+        "открйо телепрограмму",
+        "teleprogramma"
+      ],
+      "negative": [
+        "раздел каналы",
+        "установка антенны",
+        "вкладка бесплатно"
+      ],
+      "confidence": "high"
+    },
+    {
+      "target": "home.topbar:Источники",
+      "key": [
+        {"stem": "источник", "pos": "noun"}
+      ],
+      "context": ["вкладк", "открой"],
+      "exact_words": [],
+      "requires_all": ["источник", "вкладк"],
+      "positive": [
+        "вкладка источники",
+        "открой вкладку источники",
+        "вкладка источники на верхней панели",
+        "открйо вкладку источники",
+        "vkladka istochniki"
+      ],
+      "negative": [
+        "изменить источники",
+        "источник",
+        "hdmi ultra hd"
+      ],
+      "confidence": "low"
+    },
+    {
+      "target": "home.topbar:Настройки",
+      "key": [
+        {"stem": "главн", "pos": "adj"},
+        {"stem": "шестеренк", "pos": "noun"},
+        {"stem": "верхн", "pos": "adj"}
+      ],
+      "context": ["установк", "меню", "открой"],
+      "exact_words": ["все"],
+      "requires_all": ["установк"],
+      "positive": [
+        "главное меню установок",
+        "все установки телевизора",
+        "шестеренка установок сверху",
+        "открйо главное меню установок",
+        "glavnoe menju ustanovok"
+      ],
+      "negative": [
+        "общие настройки",
+        "установка антенны",
+        "установки мыши"
+      ],
+      "confidence": "high"
+    }
+  ],
+  "must_not_steal": [
+    {
+      "phrase": "подсветка зелёная",
+      "file": "src/test_tv_commands.py",
+      "test": "test_ambilight_colour",
+      "line": 331
+    },
+    {
+      "phrase": "подсветка синяя 100",
+      "file": "src/test_tv_commands.py",
+      "test": "test_ambilight_colour_with_brightness",
+      "line": 349
+    },
+    {
+      "phrase": "подсветка музыка",
+      "file": "src/test_tv_commands.py",
+      "test": "test_ambilight_audio",
+      "line": 267
+    },
+    {
+      "phrase": "подсветка вечеринка",
+      "file": "src/test_tv_commands.py",
+      "test": "test_ambilight_audio",
+      "line": 269
+    },
+    {
+      "phrase": "подсветка спектр",
+      "file": "src/test_tv_commands.py",
+      "test": "test_ambilight_audio",
+      "line": 271
+    },
+    {
+      "phrase": "подсветка кино",
+      "file": "src/test_tv_commands.py",
+      "test": "test_ambilight_video",
+      "line": 288
+    },
+    {
+      "phrase": "подсветка игра",
+      "file": "src/test_tv_commands.py",
+      "test": "test_ambilight_video",
+      "line": 289
+    },
+    {
+      "phrase": "подсветка выключи",
+      "file": "src/test_tv_commands.py",
+      "test": "test_ambilight_off_dims_lounge_not_power",
+      "line": 298
+    },
+    {
+      "phrase": "включи подсветку",
+      "file": "src/test_tv_commands.py",
+      "test": "test_ambilight_on",
+      "line": 313
+    },
+    {
+      "phrase": "громкость 20",
+      "file": "src/test_tv_commands.py",
+      "test": "test_volume_set_level",
+      "line": 185
+    },
+    {
+      "phrase": "громче на 7",
+      "file": "src/test_tv_commands.py",
+      "test": "test_volume_step_number",
+      "line": 167
+    },
+    {
+      "phrase": "тише на 5",
+      "file": "src/test_tv_commands.py",
+      "test": "test_volume_step_number",
+      "line": 168
+    },
+    {
+      "phrase": "выключи звук",
+      "file": "src/test_tv_commands.py",
+      "test": "test_mute_on",
+      "line": 227
+    },
+    {
+      "phrase": "включи звук",
+      "file": "src/test_tv_commands.py",
+      "test": "test_mute_off",
+      "line": 234
+    },
+    {
+      "phrase": "выключи телевизор",
+      "file": "src/test_tv_commands.py",
+      "test": "test_standby_needs_confirm",
+      "line": 406
+    },
+    {
+      "phrase": "выключи тв",
+      "file": "src/test_tv_commands.py",
+      "test": "test_standby_needs_confirm",
+      "line": 406
+    },
+    {
+      "phrase": "включи телевизор",
+      "file": "src/test_tv_commands.py",
+      "test": "test_power_on_is_wake_on_lan_and_claims_nothing",
+      "line": 362
+    },
+    {
+      "phrase": "ок",
+      "file": "src/test_tv_commands.py",
+      "test": "test_keys",
+      "line": 392
+    },
+    {
+      "phrase": "меню",
+      "file": "src/test_tv_commands.py",
+      "test": "test_keys",
+      "line": 393
+    },
+    {
+      "phrase": "источник",
+      "file": "src/test_tv_commands.py",
+      "test": "test_keys",
+      "line": 394
+    },
+    {
+      "phrase": "статус",
+      "file": "src/test_tv_commands.py",
+      "test": "test_status_still_reports_volume",
+      "line": 427
+    },
+    {
+      "phrase": "яркость плюс 2",
+      "file": "src/test_tv_commands_ambi.py",
+      "test": "test_brightness_plus_minus_is_step",
+      "line": 166
+    },
+    {
+      "phrase": "подсветка ярче на 3",
+      "file": "src/test_tv_commands_ambi.py",
+      "test": "test_brightness",
+      "line": 39
+    },
+    {
+      "phrase": "подсветка насыщеннее",
+      "file": "src/test_tv_commands_ambi.py",
+      "test": "test_saturation",
+      "line": 70
+    },
+    {
+      "phrase": "подсветка авто",
+      "file": "src/test_tv_commands_ambi.py",
+      "test": "test_ai_mode_turns_power_on_and_sets_enum",
+      "line": 79
+    },
+    {
+      "phrase": "громкость двадцать пять",
+      "file": "src/test_tv_commands_ambi.py",
+      "test": "test_volume_word_numbers",
+      "line": 120
+    },
+    {
+      "phrase": "подсветка музыка синяя",
+      "file": "src/test_amb_music.py",
+      "test": "test_parse_music",
+      "line": 23
+    },
+    {
+      "phrase": "подсветка под музыку от синего до желтого",
+      "file": "src/test_amb_music.py",
+      "test": "test_parse_music",
+      "line": 24
+    },
+    {
+      "phrase": "подсветка переход",
+      "file": "src/test_amb_music.py",
+      "test": "test_parse_music",
+      "line": 25
+    },
+    {
+      "phrase": "вниз три",
+      "file": "src/test_tv_nav.py",
+      "test": "test_sequences",
+      "line": 25
+    }
+  ],
+  "ambiguous": [
+    {
+      "phrase": "экран",
+      "targets": [
+        "settings.general.power:Выкл. экран",
+        "settings.screen",
+        "settings.screen:Формат изображения"
+      ],
+      "ask": "Экран: погасить экран («Выкл. экран») или открыть раздел «Экран» (формат изображения)?"
+    },
+    {
+      "phrase": "дополнительные настройки",
+      "targets": [
+        "settings.sound:Дополнительные",
+        "settings.ambilight:Дополнительные"
+      ],
+      "ask": "Дополнительные настройки: в разделе «Звук» или в разделе «Ambilight»?"
+    },
+    {
+      "phrase": "поменяй стиль",
+      "targets": [
+        "settings.picture:Стиль изображ.",
+        "settings.sound:Стиль звука",
+        "settings.ambilight:Стиль Ambilight"
+      ],
+      "ask": "Какой стиль открыть: «Стиль изображения», «Стиль звука» или «Стиль Ambilight»?"
+    },
+    {
+      "phrase": "поставь таймер",
+      "targets": [
+        "settings.general.power:Таймер сна",
+        "settings.general.power:Таймер автовык...",
+        "settings.general.power:Таймер \"Нет сиг...\""
+      ],
+      "ask": "Какой таймер нужен: «Таймер сна», «Таймер автовыключения» или «Таймер \"Нет сигнала\"»?"
+    },
+    {
+      "phrase": "настройки пульта",
+      "targets": [
+        "settings.network:Пульт ДУ",
+        "settings.general:Пульт ДУ EasyLink"
+      ],
+      "ask": "Пульт ДУ: сопряжение в разделе «Сеть» или «Пульт ДУ EasyLink» в «Общих настройках»?"
+    },
+    {
+      "phrase": "easylink",
+      "targets": [
+        "settings.general:EasyLink",
+        "settings.general:Пульт ДУ EasyLink",
+        "settings.sound:EasyLink 2.0"
+      ],
+      "ask": "EasyLink: общий тумблер в «Общих настройках», «Пульт ДУ EasyLink» или звуковой «EasyLink 2.0»?"
+    },
+    {
+      "phrase": "источники",
+      "targets": [
+        "home.topbar:Источники",
+        "settings.general:Изменить источ..."
+      ],
+      "ask": "Источники: открыть вкладку «Источники» на верхней панели или «Изменить источники» в общих настройках?"
+    },
+    {
+      "phrase": "приложения",
+      "targets": [
+        "home.topbar:Приложения",
+        "settings.parental:Блокировка приложе..."
+      ],
+      "ask": "Приложения: открыть вкладку «Приложения» на домашнем экране или «Блокировка приложений» в родительском контроле?"
+    },
+    {
+      "phrase": "открой настройки",
+      "targets": [
+        "home.topbar:Настройки",
+        "settings.general"
+      ],
+      "ask": "Настройки: открыть главное меню «Установки» или раздел «Общие настройки»?"
+    },
+    {
+      "phrase": "универсальный доступ",
+      "targets": [
+        "settings.access",
+        "settings.access:Универсальный доступ"
+      ],
+      "ask": "Универсальный доступ: открыть раздел или выделить сам тумблер «Универсальный доступ»?"
+    },
+    {
+      "phrase": "профиль",
+      "targets": [
+        "settings.sound:Профиль звука",
+        "settings.channels:Профиль операт...",
+        "settings.channels:Имя профиля для мо..."
+      ],
+      "ask": "Какой профиль: «Профиль звука» или профиль оператора/модуля в разделе «Каналы»?"
+    },
+    {
+      "phrase": "режим магазина",
+      "targets": [
+        "settings.general:Расположение",
+        "settings.general:Установка для м..."
+      ],
+      "ask": "Магазин: пункт «Расположение» (Дом/Магазин) или подменю «Установка для магазина»?"
+    },
+    {
+      "phrase": "установка каналов",
+      "targets": [
+        "settings.channels:Установка антенн...",
+        "settings.channels:Установка спутн..."
+      ],
+      "ask": "Установка каналов: антенные/кабельные («Установка антенны») или спутниковые («Установка спутника»)?"
+    }
+  ],
+  "conflicts": [
+    {
+      "stem": "выключ + экран",
+      "existing": "src/tv_commands.py (строка 265): if re.search(r\"выключи\\w*\\s+(телевизор|тв|экран)|режим ожидания|стендбай|standby\", t): — решение Оператора 05.11 17:50: убрать «экран» из standby, вести в settings.general.power:Выкл. экран"
+    },
+    {
+      "stem": "включ + тв/телевизор",
+      "existing": "src/tv_commands.py (строка 271): if re.search(r\"включи\\w*\\s+(телевизор|тв)(?![a-zа-я])\", t) and not amb: — power_on (Wake-on-LAN), в must_not_steal"
+    },
+    {
+      "stem": "подсветк / амбилайт / ambilight",
+      "existing": "src/tv_commands.py (строка 261): amb = bool(re.search(r\"(?<![a-zа-я])(подсветк\\w*|амбилайт|ambilight|яркост\\w*|насыщенност\\w*|цвет|цвета)(?![a-zа-я])\", t)) и блок if amb: (строки 279–359)"
+    },
+    {
+      "stem": "цвет",
+      "existing": "src/tv_commands.py (строка 261, переменная amb: цвет|цвета) и таблица HUES (строки 168–174, вызов hit = _word_in(t, HUES) на строке 308) — перехватывает settings.picture:Цвет"
+    },
+    {
+      "stem": "звук / мьют / mute / анмьют / unmute / заглуши",
+      "existing": "src/tv_commands.py (строка 383): if re.search(r\"(включи звук|верни звук|со звуком|анмьют|(?<![a-zа-я])unmute(?![a-zа-я]))\", t): и (строка 388): if re.search(r\"(без звука|выключи звук|заглуши|мьют|(?<![a-zа-я])mute(?![a-zа-я]))\", t):"
+    },
+    {
+      "stem": "громкост / громче / тише / прибав / убав",
+      "existing": "src/tv_commands.py (_UP_WORDS/_DOWN_WORDS строки 208–211, parse() строки 393, 413, 419): if re.search(r\"громкость\", t):, if re.search(r\"(громче|погромче|прибав\\w+)\", t):, if re.search(r\"(тише|потише|убав\\w+|сделай тихо)\", t):"
+    },
+    {
+      "stem": "настройк / опци / меню / домой / home / приложени / портал / смарт / источник / вход / тв",
+      "existing": "src/tv_commands.py (KEY_WORDS строки 82–97, вызов hit = _word_in(t, KEY_WORDS) на строке 439) — одиночные нажатия кнопок пульта"
+    }
+  ],
+  "not_found": [
+    "Аудиовыход / вывод звука (динамики ТВ, оптика S/PDIF, HDMI ARC, наушники) — есть в quickmenu.frequent:Аудиовых., но у quickmenu.frequent opener=null (по сети не открывается), а на верхнем уровне settings.sound такого пункта нет",
+    "Яркость экрана / подсветка матрицы (яркость картинки) — в settings.picture есть «Контрастность», «Цвет», «Четкость», но нет пункта «Яркость»",
+    "Эквалайзер (полосы частот, басы, высокие частоты) — в settings.sound нет пункта со словом «Эквалайзер» (вероятно, внутри неснятого подменю «Пользовательские нас...»)",
+    "Включение по сигналу Wi-Fi (WoWLAN / Wake-on-LAN) — упоминается в docstring src/tv_commands.py (строка 24), но подменю внутри settings.network:Проводная или Wi-Fi кадрами не снято",
+    "Сброс к заводским настройкам / перезагрузка ТВ — отсутствует в снятом списке settings.general",
+    "Цветовая температура / баланс белого / гамма / HDR — отсутствуют на верхнем уровне settings.picture",
+    "Внутренние пункты раздела «Обновить ПО» (поиск обновления по сети / с USB) — узел settings.update имеет статус PENDING (кадра списка нет, items пуст)",
+    "Пункты быстрого меню «Часто используемые» (quickmenu.frequent) — узел подтверждён кадрами, но открывается только физической кнопкой пульта (полоски+шестерёнка), tv_menu_map.route() его не поддерживает"
+  ]
+}

@@ -1,0 +1,3 @@
+# HUD-оверлей (src/hud_overlay.py) — ставится отдельно от зависимостей бота.
+# Окружение службы OkoBot его не требует. Установка: python -m pip install -r hud_requirements.txt
+PyQt6>=6.6
