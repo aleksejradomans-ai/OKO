@@ -1,0 +1,870 @@
+{
+ "_about": "Карта меню ТВ (Titan OS). v1 04.11.2026. Источник: архив oko_tv_menu_frames_20261104.zip (SHA256[:16] 21F99070D4378D59), сверка Claude построчно. Имена — как в списке (с ...); name_preview — длиннее, в превью справа. Сравнение — по началу строки (tv_menu_map.same_name). Правки — только с кадром; проверка — tv_menu_map.validate() + test_tv_menu_map.py. | v2 13.11.2026: живой обход веб-камерой ноутбука (приложение «Камера» + скриншоты Claude, кнопки по сети TVKEYS), кадры 07_live_cam_walk_1713 (отзеркалены обратно). Раздел «Сеть» не открывался (решение Оператора 13.11).",
+ "version": 2,
+ "confirm_whitelist": [
+  "home.topbar:Настройки",
+  "popup.eco:OK",
+  "settings.general.power:Выкл. экран"
+ ],
+ "nodes": {
+  "home.topbar": {
+   "enter": [
+    "Home",
+    "CursorUp",
+    "CursorUp"
+   ],
+   "axis": "horizontal",
+   "focus_on_enter": "Домашняя",
+   "items": [
+    "Домашняя",
+    "Игры",
+    "Бесплатно",
+    "Приложения",
+    "Телепрограмма",
+    "Источники",
+    "Настройки"
+   ],
+   "opens": {
+    "Настройки": "settings.root"
+   },
+   "frames": [
+    "02_bot_run1_1416/141604_03_CursorUp.jpg",
+    "02_bot_run1_1416/141604_09_CursorRight.jpg",
+    "07_live_cam_walk_1713/02_topbar_nastroyki.jpg"
+   ],
+   "status": "CONFIRMED"
+  },
+  "settings.root": {
+   "axis": "vertical",
+   "focus_on_enter": "Изображение",
+   "title": "Установки",
+   "items": [
+    "Изображение",
+    "Экран",
+    "Звук",
+    "Ambilight",
+    "Сеть",
+    "Каналы",
+    "Общие настройки",
+    "Универсальный доступ",
+    "Блокировка от детей",
+    "Регион и язык",
+    "Обновить ПО"
+   ],
+   "sections": {
+    "Изображение": "settings.picture",
+    "Экран": "settings.screen",
+    "Звук": "settings.sound",
+    "Ambilight": "settings.ambilight",
+    "Сеть": "settings.network",
+    "Каналы": "settings.channels",
+    "Общие настройки": "settings.general",
+    "Универсальный доступ": "settings.access",
+    "Блокировка от детей": "settings.parental",
+    "Регион и язык": "settings.region",
+    "Обновить ПО": "settings.update"
+   },
+   "frames": [
+    "01_operator_remote_walk_1344/rec_046_047.9.jpg",
+    "02_bot_run1_1416/141604_10_Confirm.jpg",
+    "07_live_cam_walk_1713/03_settings_root.jpg"
+   ],
+   "status": "CONFIRMED"
+  },
+  "settings.picture": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Стиль изображ.",
+     "value": "Пользов..."
+    },
+    "Автоматический...",
+    "Контрастность",
+    "Цвет",
+    "Четкость",
+    "Шум изображения",
+    "Движение",
+    "Восстановить стиль из...",
+    "Быстрая настройка из..."
+   ],
+   "frames": [
+    "01_operator_remote_walk_1344/rec_027_028.2.jpg",
+    "07_live_cam_walk_1713/04_picture.jpg"
+   ],
+   "status": "CONFIRMED",
+   "opens": {
+    "Автоматический...": "settings.picture.auto_style",
+    "Контрастность": "settings.picture.contrast",
+    "Цвет": "settings.picture.color",
+    "Четкость": "settings.picture.sharpness",
+    "Шум изображения": "settings.picture.noise",
+    "Движение": "settings.picture.motion"
+   },
+   "note": "13.11: Стиль изображ. = Пользов... (04.11 было Домаш...)"
+  },
+  "settings.screen": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    "Формат изображения"
+   ],
+   "frames": [
+    "01_operator_remote_walk_1344/rec_030_031.4.jpg",
+    "07_live_cam_walk_1713/14_screen.jpg"
+   ],
+   "status": "CONFIRMED",
+   "note": "13.11: Right и Confirm на «Формат изображения» — экран без изменений (источник — приложение)"
+  },
+  "settings.sound": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "IntelliSound",
+     "value": "Предус..."
+    },
+    {
+     "name": "Стиль звука",
+     "value": "Развле...",
+     "disabled": true
+    },
+    {
+     "name": "Пользовательские нас...",
+     "disabled": true
+    },
+    {
+     "name": "EasyLink 2.0",
+     "disabled": true
+    },
+    "DTS Play-Fi",
+    "Калибровка помещения",
+    {
+     "name": "Установка ТВ",
+     "value": "На с..."
+    },
+    "Дополнительные",
+    "Профиль звука",
+    {
+     "name": "Dolby Atmos для науш...",
+     "kind": "toggle"
+    }
+   ],
+   "frames": [
+    "01_operator_remote_walk_1344/rec_034_035.5.jpg",
+    "07_live_cam_walk_1713/16_sound.jpg"
+   ],
+   "status": "CONFIRMED",
+   "opens": {
+    "Калибровка помещения": "settings.sound.room_calibration",
+    "Дополнительные": "settings.sound.advanced",
+    "Профиль звука": "settings.sound.profile"
+   },
+   "note": "13.11: Стиль звука / Пользовательские / EasyLink 2.0 серые при текущем IntelliSound; Установка ТВ = На стене"
+  },
+  "settings.ambilight": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Стиль Ambilight",
+     "value": "Музыка"
+    },
+    "Персонализация Amb...",
+    "Ambilight Suite",
+    "AmbiScape",
+    "Поддержите свою ком...",
+    "Дополнительные"
+   ],
+   "frames": [
+    "01_operator_remote_walk_1344/rec_039_040.6.jpg",
+    "07_live_cam_walk_1713/20_ambilight.jpg"
+   ],
+   "status": "CONFIRMED",
+   "opens": {
+    "Стиль Ambilight": "settings.ambilight.style",
+    "Персонализация Amb...": "settings.ambilight.personalization",
+    "Дополнительные": "settings.ambilight.advanced"
+   },
+   "note": "13.11 17:2x: стиль AI -> Музыка, яркость (Музыка) 10 -> 1 — решение Оператора «Ambilight минимум + режим музыки»; Персонализация серая при AI"
+  },
+  "settings.network": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    "Проводная или Wi-Fi",
+    "Bluetooth",
+    "Пульт ДУ"
+   ],
+   "frames": [
+    "01_operator_remote_walk_1344/rec_040_041.7.jpg"
+   ],
+   "status": "CONFIRMED"
+  },
+  "settings.channels": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    "Установка антенн...",
+    "Установка спутн...",
+    "Профиль операт...",
+    "Имя профиля для мо...",
+    "Установки HbbTV",
+    {
+     "name": "Интерфейс CAM",
+     "value": "PCMCIA"
+    },
+    "Копирование списка к..."
+   ],
+   "frames": [
+    "01_operator_remote_walk_1344/rec_044_045.9.jpg"
+   ],
+   "status": "CONFIRMED"
+  },
+  "settings.general": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "focus_on_enter": "Настройки клав...",
+   "items": [
+    {
+     "name": "Настройки клав...",
+     "name_preview": "Настройки клавиатур..."
+    },
+    "Установки мыши",
+    {
+     "name": "Питание и энерг...",
+     "name_preview": "Питание и энергопотр...",
+     "submenu": true
+    },
+    {
+     "name": "EasyLink",
+     "kind": "toggle"
+    },
+    {
+     "name": "Пульт ДУ EasyLink",
+     "kind": "toggle"
+    },
+    {
+     "name": "Apple AirPlay и H...",
+     "name_preview": "Apple AirPlay и HomeKit"
+    },
+    {
+     "name": "Настройки заста...",
+     "name_preview": "Настройки заставки",
+     "submenu": true
+    },
+    {
+     "name": "Расположение",
+     "value": "Домаш..."
+    },
+    {
+     "name": "Установка для м...",
+     "name_preview": "Установка для магазина",
+     "submenu": true
+    },
+    {
+     "name": "Изменить источ...",
+     "name_preview": "Изменить источники в...",
+     "submenu": true
+    },
+    {
+     "name": "HDMI Ultra HD",
+     "submenu": true
+    },
+    "Условия использ..."
+   ],
+   "opens": {
+    "Питание и энерг...": "settings.general.power",
+    "Настройки заста...": "settings.general.screensaver"
+   },
+   "frames": [
+    "01_operator_remote_walk_1344/rec_046_047.9.jpg",
+    "02_bot_run1_1416/141604_17_CursorRight.jpg",
+    "07_live_cam_walk_1713/31_general_hdmi_uhd_note.jpg"
+   ],
+   "status": "CONFIRMED",
+   "note": "13.11: 12-й пункт «Условия использ...»; HDMI Ultra HD не открывается — ТВ просит переключиться на источник HDMI; «Установка для м...» серый"
+  },
+  "settings.general.power": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "popup_first": "popup.eco",
+   "focus_on_enter": "Процедура вкл...",
+   "items": [
+    {
+     "name": "Процедура вкл...",
+     "value": "Домаш..."
+    },
+    "Выкл. экран",
+    {
+     "name": "Таймер сна",
+     "value": "Выкл"
+    },
+    {
+     "name": "Таймер автовык...",
+     "value": "240 минут"
+    },
+    {
+     "name": "Таймер \"Нет сиг...\"",
+     "value": "10 минут"
+    }
+   ],
+   "frames": [
+    "06_operator_phone_photos/P3_phone_pitanie_list_1421.jpg",
+    "03_bot_run2_1447/144755_22_CursorDown.jpg"
+   ],
+   "status": "CONFIRMED"
+  },
+  "popup.eco": {
+   "axis": "horizontal",
+   "title": "Уведомление об экологичности",
+   "items": [
+    "Никогда",
+    "OK"
+   ],
+   "focus_on_enter": "OK",
+   "accept": [
+    "Confirm"
+   ],
+   "note": "появлялось 4 из 4 входов в Питание; «Никогда» меняет настройку ТВ — решение Оператора",
+   "frames": [
+    "06_operator_phone_photos/P2_phone_eco_popup_1421.jpg",
+    "02_bot_run1_1416/141604_20_CursorRight.jpg"
+   ],
+   "status": "CONFIRMED"
+  },
+  "settings.access": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Универсальный доступ",
+     "kind": "toggle"
+    },
+    "Нарушения слуха",
+    "Описание аудио",
+    "Усиление речи",
+    "Увеличение текста"
+   ],
+   "frames": [
+    "01_operator_remote_walk_1344/rec_050_052.1.jpg"
+   ],
+   "status": "CONFIRMED"
+  },
+  "settings.parental": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    "Родительский контроль",
+    "Блокировка приложе...",
+    "Установить код"
+   ],
+   "frames": [
+    "01_operator_remote_walk_1344/rec_052_054.1.jpg"
+   ],
+   "status": "CONFIRMED"
+  },
+  "settings.region": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    "Язык",
+    "Часы"
+   ],
+   "frames": [
+    "01_operator_remote_walk_1344/rec_056_058.3.jpg"
+   ],
+   "status": "CONFIRMED",
+   "opens": {
+    "Часы": "settings.region.clock"
+   }
+  },
+  "settings.update": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    "Поиск обновлений",
+    "Информация о т...",
+    {
+     "name": "Автоматическое...",
+     "kind": "toggle"
+    },
+    "Просмотр истор..."
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/28_update.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Поиск обновлений",
+   "note": "«Поиск обновлений» запускает поиск — не нажимать без Оператора"
+  },
+  "quickmenu.frequent": {
+   "title": "Часто используем...",
+   "opener": null,
+   "axis": "vertical",
+   "items": [
+    "Выкл. экран",
+    "Стиль изображ.",
+    "Аудиовых.",
+    "Профиль звука",
+    "Сеть",
+    "Стиль звука",
+    "IntelliSound",
+    "Установка каналов",
+    "Таймер сна"
+   ],
+   "note": "открывается только кнопкой пульта (полоски+шестерёнка); по сети не найдено; «Опции» внизу — подпись",
+   "frames": [
+    "05_quick_menus/A_chasto_ispolzuem_gear_remote_1225.jpg"
+   ],
+   "status": "CONFIRMED"
+  },
+  "settings.picture.auto_style": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Стиль изображения",
+     "value": "Crystal C..."
+    },
+    {
+     "name": "Автоматический...",
+     "kind": "toggle"
+    }
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/05_picture_auto_style.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Предпочитаемый ст..."
+  },
+  "settings.picture.contrast": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    "Яркость",
+    "Детализация те...",
+    "Повышение кон...",
+    {
+     "name": "Управление HDR",
+     "disabled": true
+    }
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/06_picture_contrast.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Яркость",
+   "opens": {
+    "Детализация те...": "settings.picture.contrast.dark_detail",
+    "Повышение кон...": "settings.picture.contrast.boost"
+   }
+  },
+  "settings.picture.contrast.dark_detail": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Гамма",
+     "value": "0",
+     "kind": "slider"
+    },
+    {
+     "name": "Уровень черного",
+     "value": "50",
+     "kind": "slider"
+    }
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/07_picture_contrast_dark_detail.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Гамма"
+  },
+  "settings.picture.contrast.boost": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Уровень динамического улучшения",
+     "value": "Выкл"
+    }
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/08_picture_contrast_boost.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Уровень динамическ..."
+  },
+  "settings.picture.color": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Насыщенность",
+     "value": "0",
+     "kind": "slider"
+    },
+    {
+     "name": "Улучшение цвета",
+     "value": "Минимум"
+    },
+    {
+     "name": "Широкое цвето...",
+     "kind": "toggle"
+    },
+    "Цветовая темпе...",
+    {
+     "name": "Управление цве...",
+     "disabled": true
+    }
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/09_picture_color.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Насыщенность",
+   "opens": {
+    "Цветовая темпе...": "settings.picture.color.temperature"
+   }
+  },
+  "settings.picture.color.temperature": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Точка белого",
+     "value": "Теплый"
+    },
+    "Выравнивание п... (1)",
+    "Выравнивание п... (2)"
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/10_picture_color_temperature.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Точка белого",
+   "note": "два пункта «Выравнивание п...» с одинаковым обрезанным именем; полные имена не видны"
+  },
+  "settings.picture.sharpness": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Усиление",
+     "value": "10",
+     "kind": "slider"
+    },
+    {
+     "name": "Улучшение каче...",
+     "kind": "toggle"
+    }
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/11_picture_sharpness.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Усиление"
+  },
+  "settings.picture.noise": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Шумоподавление",
+     "value": "Максим..."
+    },
+    {
+     "name": "Снижение дефе...",
+     "value": "Максим...",
+     "disabled": true
+    }
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/12_picture_noise.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Шумоподавление"
+  },
+  "settings.picture.motion": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Стили отображения динамических с...",
+     "value": "Сглажи..."
+    }
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/13_picture_motion.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Стили отображения ..."
+  },
+  "settings.sound.advanced": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Авторегулировка громкости",
+     "kind": "toggle?"
+    },
+    {
+     "name": "Разница громко...",
+     "value": "0",
+     "disabled": true
+    },
+    {
+     "name": "Аудиовых.",
+     "value": "Оптиче..."
+    },
+    {
+     "name": "eARC",
+     "value": "Автома..."
+    },
+    {
+     "name": "Формат цифров...",
+     "value": "Многок..."
+    },
+    {
+     "name": "Регулировка ци...",
+     "value": "Больше",
+     "disabled": true
+    },
+    {
+     "name": "Задержка цифр...",
+     "kind": "toggle",
+     "disabled": true
+    },
+    {
+     "name": "Смещение цифр...",
+     "value": "0",
+     "disabled": true
+    }
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/17_sound_advanced.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Авторегулировка гр...",
+   "note": "Аудиовыход = Оптический (звук на колонки Logitech); значение «Авторегулировки» пересвечено фокусом"
+  },
+  "settings.sound.profile": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Включение",
+     "kind": "toggle"
+    },
+    "Настроить",
+    {
+     "name": "Профили",
+     "disabled": true
+    }
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/18_sound_profile.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Включение"
+  },
+  "settings.sound.room_calibration": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    "Калибровать сейчас",
+    {
+     "name": "Применить кали...",
+     "disabled": true
+    }
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/19_sound_room_calibration.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Калибровать сейчас",
+   "note": "«Калибровать сейчас» запускает калибровку — не нажимать без Оператора"
+  },
+  "settings.ambilight.style": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    "Выкл.",
+    "AI",
+    "Стандартный",
+    "Спорт",
+    "Кино",
+    "Игры",
+    "Музыка",
+    "Фикс. цвет",
+    "Поддержите свою кома..."
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/21_ambilight_style_AI.jpg",
+    "07_live_cam_walk_1713/23_ambilight_style_music_set.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Стиль Ambilight",
+   "kind": "choice",
+   "selected": "Музыка",
+   "selected_before": "AI",
+   "note": "выбор — Confirm на пункте (галочка)"
+  },
+  "settings.ambilight.personalization": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Выбор стиля музыки",
+     "value": "Насыщ..."
+    },
+    {
+     "name": "Эко, адаптивный",
+     "kind": "toggle"
+    },
+    {
+     "name": "Яркость",
+     "value": "1",
+     "kind": "slider",
+     "axis": "horizontal",
+     "value_before": "10"
+    },
+    {
+     "name": "Насыщенность",
+     "value": "0",
+     "kind": "slider"
+    },
+    "Сбросить все по..."
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/25_ambilight_personalization_music.jpg",
+    "07_live_cam_walk_1713/26_ambilight_brightness_10.jpg",
+    "07_live_cam_walk_1713/27_ambilight_brightness_1.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Выбор стиля музыки",
+   "note": "набор пунктов — для стиля Музыка"
+  },
+  "settings.ambilight.advanced": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    "Цвет стены за телевизором",
+    {
+     "name": "Убавить",
+     "value": "10 секунд"
+    },
+    {
+     "name": "Анимация Ambil...",
+     "kind": "toggle"
+    },
+    {
+     "name": "Автозапуск Loun...",
+     "kind": "toggle"
+    }
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/24_ambilight_advanced.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Цвет стены за телев..."
+  },
+  "settings.general.screensaver": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Заставка",
+     "value": "Выкл"
+    },
+    {
+     "name": "Время до запуска",
+     "disabled": true
+    },
+    {
+     "name": "Предварительн...",
+     "disabled": true
+    }
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/30_general_screensaver.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Заставка"
+  },
+  "settings.region.clock": {
+   "axis": "vertical",
+   "enter": [
+    "CursorRight"
+   ],
+   "items": [
+    {
+     "name": "Автоматический режим часов",
+     "value": "Автома..."
+    }
+   ],
+   "frames": [
+    "07_live_cam_walk_1713/29_region_clock.jpg"
+   ],
+   "status": "CONFIRMED",
+   "title": "Автоматический реж..."
+  }
+ }
+}

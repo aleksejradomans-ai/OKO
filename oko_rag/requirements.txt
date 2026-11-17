@@ -1,0 +1,6 @@
+chromadb
+pypdf
+requests
+pymupdf
+pytesseract
+pillow

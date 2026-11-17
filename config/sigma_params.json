@@ -1,0 +1,209 @@
+{
+ "delta_rule": {
+  "beta_k_used": false,
+  "delta_fail": 1,
+  "delta_success": 0,
+  "rule": "any_fail_1",
+  "text": "δ_t = 1 на любом сбое команды (outcome FAIL или err), 0 на успехе; β_k -- запись, в δ не участвуют"
+ },
+ "dt_0": {
+  "source": {
+   "synthetic_default": "базовый шаг Δt_0"
+  },
+  "status": "MANUAL",
+  "unit": "s",
+  "use": "ядро фазы 3: λ_0 = exp(−Δt_0/τ_D), τ_D -- params.tau_D (abstraction_layer.params_from_doc)",
+  "value": 13.0
+ },
+ "eps_norm": {
+  "consistent_with_eps_state": true,
+  "kernel_scalar_equivalent": {
+   "lounge_brightness": 0.1,
+   "setting_710": 0.1
+  },
+  "per_feature": {
+   "lounge_brightness": 0.1,
+   "setting_710": 0.1
+  },
+  "source": {
+   "synthetic_default": "базовый допуск"
+  },
+  "use": "фаза 3: d_j/κ_j сравнивается с ε_norm_j по признаку (допуск d_∞, ядро фазы 3); ядро фазы 2 берёт скаляр ε_state"
+ },
+ "holdout_2e": {
+  "last_seq": 0,
+  "rule": "новые команды, seq > last_seq"
+ },
+ "journal": {
+  "file": "logs/sigma_shadow.jsonl",
+  "lines_bad": 0,
+  "lines_ok": 0,
+  "sha16": null
+ },
+ "n": 0,
+ "note": "synthetic_default: публичный срез, без журнала; локальная калибровка -- OKO_SIGMA_PARAMS_PATH / config/sigma_params.json",
+ "params": {
+  "R_t": {
+   "source": {
+    "synthetic_default": "базовый порог (ручное значение схемы)"
+   },
+   "status": "MANUAL",
+   "value": {
+    "N_obs": 3,
+    "N_reflect": 2,
+    "N_route": 3
+   }
+  },
+  "T_theta": {
+   "source": {
+    "no_data": "synthetic_default: оценка по журналу не публикуется (n = 0)"
+   },
+   "status": "NO_DATA",
+   "value": null
+  },
+  "Theta_crit": {
+   "source": {
+    "synthetic_default": "базовый порог (ручное значение схемы)"
+   },
+   "status": "MANUAL",
+   "value": 0.5
+  },
+  "Theta_goal": {
+   "source": {
+    "no_data": "не задано в схеме (NO_DATA)"
+   },
+   "status": "NO_DATA",
+   "value": null
+  },
+  "Theta_intent": {
+   "source": {
+    "no_data": "не задано в схеме (NO_DATA)"
+   },
+   "status": "NO_DATA",
+   "value": null
+  },
+  "Theta_margin": {
+   "source": {
+    "no_data": "не задано в схеме (NO_DATA)"
+   },
+   "status": "NO_DATA",
+   "value": null
+  },
+  "Theta_reset": {
+   "source": {
+    "synthetic_default": "базовый порог (ручное значение схемы)"
+   },
+   "status": "MANUAL",
+   "value": 0.2
+  },
+  "Theta_state": {
+   "source": {
+    "synthetic_default": "базовый порог (ручное значение схемы)"
+   },
+   "status": "MANUAL",
+   "value": 0.5
+  },
+  "Z_theta": {
+   "source": {
+    "no_data": "synthetic_default: оценка по журналу не публикуется (n = 0)"
+   },
+   "status": "NO_DATA",
+   "value": null
+  },
+  "alpha_j": {
+   "source": {
+    "synthetic_default": "базовый порог (ручное значение схемы)"
+   },
+   "status": "MANUAL",
+   "value": {
+    "lounge_brightness": 0.5,
+    "setting_710": 0.5
+   }
+  },
+  "beta_k": {
+   "source": {
+    "synthetic_default": "базовый порог (ручное значение схемы)"
+   },
+   "status": "MANUAL",
+   "value": {
+    "cancel": 0.16666666666666666,
+    "net": 0.16666666666666666,
+    "other": 0.16666666666666666,
+    "parse_fail": 0.16666666666666666,
+    "verify_fail": 0.16666666666666666,
+    "warn": 0.16666666666666666
+   }
+  },
+  "eps_cov": {
+   "source": {
+    "no_data": "не задано в схеме (NO_DATA)"
+   },
+   "status": "NO_DATA",
+   "value": null
+  },
+  "eps_state": {
+   "source": {
+    "synthetic_default": "базовый порог (ручное значение схемы)"
+   },
+   "status": "MANUAL",
+   "value": 0.05
+  },
+  "kappa_j": {
+   "source": {
+    "synthetic_default": "базовый порог (ручное значение схемы)"
+   },
+   "status": "MANUAL",
+   "value": {
+    "lounge_brightness": 255.0,
+    "setting_710": 10.0
+   }
+  },
+  "kappa_space": {
+   "source": {
+    "no_data": "не задано в схеме (NO_DATA)"
+   },
+   "status": "NO_DATA",
+   "value": null
+  },
+  "pi_0": {
+   "source": {
+    "no_data": "synthetic_default: оценка по журналу не публикуется (n = 0)"
+   },
+   "status": "NO_DATA",
+   "value": null
+  },
+  "tau_D": {
+   "source": {
+    "synthetic_default": "базовый порог (ручное значение схемы)"
+   },
+   "status": "MANUAL",
+   "value": 60.0
+  },
+  "tau_b": {
+   "source": {
+    "synthetic_default": "базовый порог (ручное значение схемы)"
+   },
+   "status": "MANUAL",
+   "value": 600.0
+  },
+  "tau_h": {
+   "source": {
+    "no_data": "не задано в схеме (NO_DATA)"
+   },
+   "status": "NO_DATA",
+   "value": null
+  },
+  "tau_i": {
+   "source": {
+    "no_data": "не задано в схеме (NO_DATA)"
+   },
+   "status": "NO_DATA",
+   "value": null
+  }
+ },
+ "sample": {
+  "commands": 0
+ },
+ "schema": "sigma_params/2d-v3",
+ "source": "synthetic_default"
+}

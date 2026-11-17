@@ -1,0 +1,40 @@
+[Unit]
+Description=Oko Process Watchdog (sidecar health monitor for oko-watcher)
+After=oko-watcher.service
+BindsTo=oko-watcher.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=oko
+Group=oko
+
+WorkingDirectory=/opt/oko/src
+EnvironmentFile=/opt/oko/.env
+
+# --target-log-file ниже указывает на файл, в который должен писать
+# run_system.py (наблюдаемый процесс), НЕ на лог самого watchdog'а.
+# Перенаправление stderr run_system.py в этот файл настраивается в
+# oko-watcher.service (StandardOutput=append:.../run_system.log), не
+# здесь — см. историю решений: этот файл изначально был добавлен в
+# неверный unit (watchdog вместо наблюдаемого процесса), исправлено.
+ExecStart=/usr/bin/python3 /opt/oko/src/process_watchdog.py \
+    --target-pid-file /opt/oko/data/run_system.pid \
+    --heartbeat-file /opt/oko/data/run_system.heartbeat \
+    --target-log-file /opt/oko/data/run_system.log \
+    --memory-limit-mb 512 \
+    --error-rate-limit 5 \
+    --error-window-sec 60 \
+    --heartbeat-timeout-sec 120 \
+    --check-interval-sec 10
+
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/oko/data
+
+[Install]
+WantedBy=multi-user.target

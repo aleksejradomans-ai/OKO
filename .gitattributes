@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.sln text eol=crlf
+*.vcproj text eol=crlf
+security_tools/manifest.sha256 text eol=crlf
+*.ahk text eol=crlf

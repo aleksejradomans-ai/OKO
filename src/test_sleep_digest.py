@@ -1,0 +1,510 @@
+"""Тесты M7.1/M7.2: ops_db + sleep_digest (без LLM, без сети, временные файлы)."""
+import json
+import sqlite3
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+import ops_db
+import sleep_digest as sd
+from ops_db import Cursor, OpsDB
+
+T0 = datetime(2026, 10, 1, 12, 0, 0)
+
+
+def ln(dt, level, name, msg, ms=0):
+    return f"{dt:%Y-%m-%d %H:%M:%S},{ms:03d} [{level}] {name}: {msg}"
+
+
+def metrics_msg(ce=0.0, ad=1.0, rl=0.0, cjk=0.0, length=300, point="B", intent="inform"):
+    return (f"[METRICS] point={point} ce={ce:.2f} ad={ad:.2f} rl={rl:.2f} "
+            f"intent={intent}(1.00) cyr=0.87 lat=0.13 cjk={cjk:.2f} len={length}")
+
+
+def write(path: Path, lines, mode="a", enc="utf-8"):
+    with open(path, mode, encoding=enc, newline="") as f:
+        for l in lines:
+            f.write(l + "\r\n")
+
+
+@pytest.fixture
+def paths(tmp_path):
+    return tmp_path / "okobot_stderr.log", tmp_path / "data" / "ops.db"
+
+
+# --- разбор -------------------------------------------------------------------
+def test_parse_line_and_continuation():
+    p = sd.parse_line(ln(T0, "INFO", "src.governor", "[METRICS] point=B", 123))
+    assert p is not None and p[1] == "INFO" and p[2] == "src.governor"
+    assert abs(p[0] - (time.mktime(T0.timetuple()) + 0.123)) < 1e-6
+    assert sd.parse_line("Traceback (most recent call last):") is None
+    assert sd.parse_line('  File "bot.py", line 1') is None
+
+
+def test_parse_metrics_handoff_line():
+    m = sd.parse_metrics("[METRICS] point=B ce=0.00 ad=1.00 rl=0.00 intent=inform(1.00) "
+                         "cyr=0.87 lat=0.13 cjk=0.00 len=336")
+    assert m == {"point": "B", "ce": 0.0, "ad": 1.0, "rl": 0.0, "cyr": 0.87, "lat": 0.13,
+                 "cjk": 0.0, "len": 336.0, "intent": "inform"}
+    assert sd.parse_metrics("[METRICS] point=B ce=x") is None
+    assert sd.parse_metrics("[METRICS_FAIL] boom") is None
+
+
+def test_digest_counts_levels_tags_err_codes():
+    lines = [
+        ln(T0, "INFO", "governor", metrics_msg(cjk=0.1, ad=0.5, rl=0.3)),
+        ln(T0, "WARNING", "governor", "[TRANSPORT_GATE] CLOSED->OPEN step=0 pause=6s"),
+        ln(T0, "WARNING", "bot", "[TG_TRANSPORT] NetworkError"),
+        ln(T0, "INFO", "bot", "reply [ERR: LLM_UNAVAILABLE] sent"),
+        ln(T0, "ERROR", "bot", "boom"),
+        "Traceback (most recent call last):",
+    ]
+    d = sd.build_digest(lines)
+    assert d["lines_total"] == 6 and d["lines_unparsed"] == 1
+    assert d["levels"] == {"INFO": 2, "WARNING": 2, "ERROR": 1}
+    assert d["tags"] == {"METRICS": 1, "TRANSPORT_GATE": 1, "TG_TRANSPORT": 1}
+    assert d["err_codes"] == {"LLM_UNAVAILABLE": 1}
+    m = d["metrics"]
+    assert m["n"] == 1 and m["share"] == {"cjk_pos": 1, "ad_low": 1, "rl_pos": 1}
+    assert m["points"] == {"B": 1} and m["intent"] == {"inform": 1}
+
+
+def test_tag_only_at_message_start_and_no_message_text_in_payload():
+    secret = "мой пароль hunter2 [SECRET_TAG] тут"
+    d = sd.build_digest([ln(T0, "INFO", "bot", f"incoming: {secret}")])
+    assert d["tags"] == {}
+    blob = json.dumps(d, ensure_ascii=False)
+    assert "hunter2" not in blob and "SECRET_TAG" not in blob and "incoming" not in blob
+
+
+def test_bad_metrics_line_counted_not_crash():
+    d = sd.build_digest([ln(T0, "INFO", "governor", "[METRICS] point=B ce=oops")])
+    assert d["metrics"]["n"] == 0 and d["metrics"]["bad"] == 1
+
+
+# --- чтение лога ---------------------------------------------------------------
+def test_incremental_read_only_new_lines(paths):
+    logf, _ = paths
+    write(logf, [ln(T0, "INFO", "a", "one"), ln(T0, "INFO", "a", "two")], mode="w")
+    r1 = sd.read_new_lines(logf, None)
+    assert [l[-3:] for l in r1.lines] == ["one", "two"] and not r1.rotated
+    write(logf, [ln(T0, "INFO", "a", "three")])
+    r2 = sd.read_new_lines(logf, r1.cursor)
+    assert len(r2.lines) == 1 and r2.lines[0].endswith("three") and not r2.rotated
+    assert sd.read_new_lines(logf, r2.cursor).lines == []
+
+
+def test_partial_last_line_not_consumed(paths):
+    logf, _ = paths
+    write(logf, [ln(T0, "INFO", "a", "full")], mode="w")
+    with open(logf, "a", encoding="utf-8") as f:
+        f.write(ln(T0, "INFO", "a", "half"))
+    r = sd.read_new_lines(logf, None)
+    assert len(r.lines) == 1 and r.lines[0].endswith("full")
+    with open(logf, "a", encoding="utf-8") as f:
+        f.write("-done\n")
+    r2 = sd.read_new_lines(logf, r.cursor)
+    assert len(r2.lines) == 1 and r2.lines[0].endswith("half-done")
+
+
+def test_rotation_detected_by_shrink_and_by_head(paths):
+    logf, _ = paths
+    write(logf, [ln(T0, "INFO", "a", "x" * 100)] * 5, mode="w")
+    r = sd.read_new_lines(logf, None)
+    write(logf, [ln(T0, "INFO", "b", "new")], mode="w")  # файл короче курсора
+    r2 = sd.read_new_lines(logf, r.cursor)
+    assert r2.rotated and len(r2.lines) == 1
+    write(logf, [ln(T0 + timedelta(days=1), "INFO", "c", "y" * 2000)], mode="w")  # длиннее, другое начало
+    r3 = sd.read_new_lines(logf, r2.cursor)
+    assert r3.rotated and len(r3.lines) == 1
+
+
+def test_cp1251_fallback_counted(paths):
+    logf, _ = paths
+    write(logf, [ln(T0, "WARNING", "bot", "[TG_TRANSPORT] сеть")], mode="w", enc="cp1251")
+    r = sd.read_new_lines(logf, None)
+    assert r.decode_fallback == 1 and r.lines[0].endswith("сеть")
+
+
+def test_max_bytes_cap_continues_next_run(paths):
+    logf, _ = paths
+    write(logf, [ln(T0, "INFO", "a", f"line{i:03d}") for i in range(100)], mode="w")
+    r = sd.read_new_lines(logf, None, max_bytes=1000)
+    assert r.truncated and 0 < len(r.lines) < 100
+    seen = list(r.lines)
+    cur = r.cursor
+    while True:
+        rr = sd.read_new_lines(logf, cur, max_bytes=1000)
+        if not rr.lines:
+            break
+        seen += rr.lines
+        cur = rr.cursor
+    assert [s[-7:] for s in seen] == [f"line{i:03d}" for i in range(100)]
+
+
+# --- ops.db --------------------------------------------------------------------
+def test_ops_db_wal_and_schema_guard(paths):
+    _, opsf = paths
+    OpsDB(opsf)
+    c = sqlite3.connect(opsf)
+    assert c.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    c.execute("UPDATE meta SET value='99' WHERE key='schema_version'")
+    c.commit()
+    c.close()
+    with pytest.raises(RuntimeError):
+        OpsDB(opsf)
+
+
+def test_digest_and_cursor_atomic(paths, monkeypatch):
+    _, opsf = paths
+    ops = OpsDB(opsf)
+    ops.save_cursor("src", Cursor(10, "h", 1))
+    orig = OpsDB._put_cursor
+
+    def boom(*a, **k):
+        raise sqlite3.OperationalError("disk I/O")
+    monkeypatch.setattr(OpsDB, "_put_cursor", staticmethod(boom))
+    with pytest.raises(sqlite3.OperationalError):
+        ops.commit_digest("src", Cursor(99, "h2", 2), 1.0, 2.0, 5, 1, {"metrics": {}}, None, "x")
+    monkeypatch.setattr(OpsDB, "_put_cursor", staticmethod(orig))
+    assert ops.recent_digests() == []
+    assert ops.get_cursor("src").offset == 10
+
+
+def test_baseline_freezes_once(paths):
+    _, opsf = paths
+    ops = OpsDB(opsf)
+    assert ops.freeze_baseline(1.0, 2.0, 50, {"a": 1}) is True
+    assert ops.freeze_baseline(3.0, 4.0, 99, {"a": 2}) is False
+    assert ops.get_baseline()["samples"] == 50
+
+
+# --- прогон и дрейф ------------------------------------------------------------
+def day_lines(day, n, **kw):
+    base = T0 + timedelta(days=day)
+    return [ln(base + timedelta(minutes=i), "INFO", "governor", metrics_msg(**kw)) for i in range(n)]
+
+
+def test_dry_run_creates_nothing(paths):
+    logf, opsf = paths
+    write(logf, day_lines(0, 5), mode="w")
+    res = sd.run_once(logf, opsf, dry_run=True)
+    assert res["status"] == "dry_run" and not opsf.exists()
+    assert res["digest"]["metrics"]["n"] == 5
+
+
+def test_run_once_writes_then_no_new_lines(paths):
+    logf, opsf = paths
+    write(logf, day_lines(0, 5), mode="w")
+    res = sd.run_once(logf, opsf)
+    assert res["status"] == "written" and res["drift_status"] == "baseline_pending"
+    assert sd.run_once(logf, opsf)["status"] == "no_new_lines"
+    assert len(OpsDB(opsf).recent_digests()) == 1
+
+
+def test_baseline_then_drift_ok_and_shift_detected(paths):
+    logf, opsf = paths
+    for day in range(8):  # база: 8 дней по 10 ответов, ce/ad/rl с разбросом
+        write(logf, [ln(T0 + timedelta(days=day, minutes=i), "INFO", "g",
+                        metrics_msg(ce=0.1 * (i % 3), ad=0.9 + 0.01 * (i % 5), length=200 + 10 * i))
+                     for i in range(10)])
+        res = sd.run_once(logf, opsf)
+    ops = OpsDB(opsf)
+    bl = ops.get_baseline()
+    assert bl is not None and bl["samples"] == 80
+    assert res["drift_status"] == "ok"  # 10 своих + добор прошлых сводок до >=30
+    assert res["digest"]["drift"]["window_digests"] == 3
+    assert res["drift_score"] < 1.0
+
+    write(logf, [ln(T0 + timedelta(days=9, minutes=i), "INFO", "g",
+                    metrics_msg(cjk=0.5, ad=0.4, length=2000)) for i in range(30)])
+    res2 = sd.run_once(logf, opsf)
+    assert res2["drift_status"] == "ok" and res2["digest"]["drift"]["window_digests"] == 1
+    comps = res2["digest"]["drift"]["components"]
+    assert comps["cjk"] == sd.Z_CAP and res2["drift_score"] > 3.0
+    assert OpsDB(opsf).get_baseline()["samples"] == 80  # база не сдвинулась
+
+
+def test_baseline_needs_both_days_and_samples(paths):
+    logf, opsf = paths
+    write(logf, day_lines(0, 60), mode="w")  # много ответов, но 1 день
+    assert sd.run_once(logf, opsf)["drift_status"] == "baseline_pending"
+    write(logf, day_lines(8, 1))  # 8 дней, 61 ответ -> заморозка
+    sd.run_once(logf, opsf)
+    assert OpsDB(opsf).get_baseline() is not None
+
+
+def test_insufficient_window(paths):
+    logf, opsf = paths
+    write(logf, day_lines(0, 50), mode="w")
+    sd.run_once(logf, opsf)
+    write(logf, day_lines(8, 5))  # заморозка; окно 5 + прошлое 50 (в пределах 7 дней? нет: 8 дней)
+    res = sd.run_once(logf, opsf)
+    assert res["drift_status"] == "insufficient"
+    assert res["digest"]["drift"]["window_samples"] == 5
+
+
+def test_no_metrics_window(paths):
+    logf, opsf = paths
+    write(logf, [ln(T0, "WARNING", "bot", "[TG_TRANSPORT] x")], mode="w")
+    res = sd.run_once(logf, opsf)
+    assert res["drift_status"] == "no_metrics" and res["drift_score"] is None
+
+
+def test_status_line(paths):
+    logf, opsf = paths
+    assert sd.status_line(opsf) == "SLEEP: нет данных" and not opsf.exists()
+    write(logf, day_lines(0, 3), mode="w")
+    sd.run_once(logf, opsf)
+    s = sd.status_line(opsf)
+    assert "ответов=3" in s and "baseline_pending" in s and "3/50" in s
+
+
+def test_cli_missing_log_exit_2(tmp_path):
+    assert sd.main(["--log", str(tmp_path / "nope.log"), "--ops", str(tmp_path / "o.db")]) == 2
+
+
+def test_no_llm_network_or_knowledge_imports():
+    for mod in (sd, ops_db):
+        src = Path(mod.__file__).read_text(encoding="utf-8")
+        for bad in ("requests", "httpx", "ollama", "chromadb", "aiohttp",
+                    "db", "memory_core", "governor", "bot"):
+            assert f"\nimport {bad}\n" not in src and f"\nfrom {bad} import" not in src
+        assert "sqlite3.connect(self.db_path" in Path(ops_db.__file__).read_text(encoding="utf-8")
+
+
+# --- [VECTOR_S] (метрика S, только наблюдение) ----------------------------------
+VS_LIVE = ("[VECTOR_S] point=B s_identity=0.560 s_manifest=0.437 id=346e1128 "
+           "man=c14d5e55 trunc=0 ms=4375")
+
+
+def vs_msg(si, sm, idh="346e1128", man="c14d5e55", trunc=0, ms=200):
+    return (f"[VECTOR_S] point=B s_identity={si:.3f} s_manifest={sm:.3f} id={idh} "
+            f"man={man} trunc={trunc} ms={ms}")
+
+
+def test_parse_vector_s_live_line_and_kinds():
+    p = sd.parse_vector_s(VS_LIVE)
+    assert p == {"kind": "point", "point": "B", "s_identity": 0.56, "s_manifest": 0.437,
+                 "trunc": False, "ms": 4375.0, "core": "346e1128:c14d5e55"}
+    assert sd.parse_vector_s("[VECTOR_S] core rebuilt id=346e1128 man=c14d5e55 model=bge-m3") \
+        == {"kind": "rebuild"}
+    assert sd.parse_vector_s("[VECTOR_S] point=B fail=TimeoutError after=3.0s") \
+        == {"kind": "fail", "point": "B", "type": "TimeoutError"}
+    assert sd.parse_vector_s("[VECTOR_S] point=B fail=<bad>type")["type"] == "?"
+    assert sd.parse_vector_s("[METRICS] point=B") is None
+
+
+@pytest.mark.parametrize("msg", [
+    "[VECTOR_S] point=B s_identity=0.5",                       # нет s_manifest
+    "[VECTOR_S] point=B s_identity=x s_manifest=0.4",          # не число
+    "[VECTOR_S] point=B s_identity=nan s_manifest=0.4",        # не конечное
+    "[VECTOR_S] point=B s_identity=1.5 s_manifest=0.4",        # вне [-1, 1]
+    "[VECTOR_S] point=B s_identity=0.5 s_manifest=0.4 trunc=y",
+])
+def test_parse_vector_s_bad(msg):
+    assert sd.parse_vector_s(msg) is None
+
+
+def test_digest_vector_s_mean_std_fail_rebuild_separate():
+    lines = [
+        ln(T0, "INFO", "src.governor", "[VECTOR_S] core rebuilt id=346e1128 man=c14d5e55 model=bge-m3"),
+        ln(T0, "INFO", "src.governor", vs_msg(0.5, 0.4, ms=4000)),
+        ln(T0, "INFO", "src.governor", vs_msg(0.6, 0.4, trunc=1, ms=200)),
+        ln(T0, "INFO", "src.governor", vs_msg(0.7, 0.4, ms=100)),
+        ln(T0, "WARNING", "src.governor", "[VECTOR_S] point=B fail=TimeoutError"),
+        ln(T0, "WARNING", "src.governor", "[VECTOR_S] point=B fail=QueueBusy"),
+        ln(T0, "INFO", "src.governor", "[VECTOR_S] point=B s_identity=oops s_manifest=1"),
+    ]
+    d = sd.build_digest(lines)
+    v = d["vector_s"]
+    assert v["n"] == 3 and v["bad"] == 1 and v["rebuilt"] == 1 and v["trunc"] == 1
+    assert v["fails"] == 2 and v["fail"] == {"TimeoutError": 1, "QueueBusy": 1}
+    assert v["points"] == {"B": 3} and v["core_changed"] is False
+    si, sm = v["summary"]["s_identity"], v["summary"]["s_manifest"]
+    assert si["mean"] == 0.6 and abs(si["std"] - 0.0816) < 1e-4
+    assert si["min"] == 0.5 and si["max"] == 0.7
+    assert sm["mean"] == 0.4 and sm["std"] == 0.0
+    assert v["ms_p50"] == 200.0 and v["ms_max"] == 4000.0
+    assert d["tags"]["VECTOR_S"] == 7
+    assert d["metrics"]["n"] == 0 and d["metrics"]["bad"] == 0  # не смешивается с M6
+
+
+def test_vector_s_empty_and_single():
+    v0 = sd.build_digest([ln(T0, "INFO", "g", metrics_msg())])["vector_s"]
+    assert v0["n"] == 0 and v0["summary"]["s_identity"] == \
+        {"mean": None, "std": None, "min": None, "max": None}
+    assert v0["ms_p50"] is None and v0["core_changed"] is False
+    v1 = sd.build_digest([ln(T0, "INFO", "g", VS_LIVE)])["vector_s"]
+    assert v1["n"] == 1 and v1["summary"]["s_identity"]["mean"] == 0.56
+    assert v1["summary"]["s_identity"]["std"] is None
+
+
+def test_vector_s_only_fails():
+    v = sd.build_digest([ln(T0, "WARNING", "g", "[VECTOR_S] point=B fail=ConnectError")] * 3)["vector_s"]
+    assert v["n"] == 0 and v["fails"] == 3 and v["summary"]["s_manifest"]["mean"] is None
+
+
+def test_vector_s_core_change_flagged():
+    v = sd.build_digest([ln(T0, "INFO", "g", vs_msg(0.5, 0.4)),
+                         ln(T0, "INFO", "g", vs_msg(0.5, 0.4, idh="deadbeef")),
+                         ln(T0, "INFO", "g", vs_msg(0.5, 0.4, man="NOTHEX!!"))])["vector_s"]
+    assert v["core_changed"] is True
+    assert v["cores"] == {"346e1128:c14d5e55": 1, "deadbeef:c14d5e55": 1, "346e1128:?": 1}
+
+
+def test_vector_s_fail_tail_not_stored():
+    d = sd.build_digest([ln(T0, "WARNING", "g",
+                            "[VECTOR_S] point=B fail=HTTPStatusError err=пароль hunter2")])
+    blob = json.dumps(d, ensure_ascii=False)
+    assert "hunter2" not in blob and "пароль" not in blob
+    assert d["vector_s"]["fail"] == {"HTTPStatusError": 1}
+
+
+def test_vector_s_not_in_drift_and_persisted(paths):
+    logf, opsf = paths
+    write(logf, day_lines(0, 5) + [ln(T0, "INFO", "g", vs_msg(0.5 + 0.01 * i, 0.4)) for i in range(4)],
+          mode="w")
+    res = sd.run_once(logf, opsf)
+    assert res["status"] == "written" and res["digest"]["metrics"]["n"] == 5
+    assert "vector_s" not in sd.DRIFT_KEYS and "s_identity" not in sd.DRIFT_KEYS
+    stored = OpsDB(opsf).last_digest().payload["vector_s"]
+    assert stored["n"] == 4 and stored["summary"]["s_identity"]["mean"] == 0.515
+
+
+# --- [CTX] / [DEPTH] (этап 1 рубежа погружения) ---------------------------------
+def ctx_line(call="main", pe="1213", ev="16", nctx="4096", fill="0.296", chars="3359"):
+    return f"[CTX] call={call} pe={pe} ev={ev} nctx={nctx} fill={fill} chars={chars}"
+
+
+def test_parse_ctx_live_line_and_dashes():
+    assert sd.parse_ctx(ctx_line()) == {"call": "main", "pe": 1213.0, "ev": 16.0,
+                                        "nctx": 4096.0, "fill": 0.296, "chars": 3359.0}
+    p = sd.parse_ctx(ctx_line(pe="-", fill="-"))
+    assert p["pe"] is None and p["fill"] is None and p["call"] == "main"
+    assert sd.parse_ctx("[DEPTH] turns=1 active_s=0.0 span_s=0.0") is None
+    assert sd.parse_ctx(ctx_line(fill="nan"))["fill"] is None
+
+
+def test_parse_depth_and_bad():
+    assert sd.parse_depth("[DEPTH] turns=3 active_s=120.5 span_s=120.5 pause_s=2400") == {
+        "turns": 3, "active_s": 120.5, "span_s": 120.5}
+    assert sd.parse_depth("[DEPTH] turns=x active_s=1 span_s=1") is None
+    assert sd.parse_depth("[CTX] call=main") is None
+
+
+def test_digest_ctx_by_call_fill_overflow_counted():
+    lines = [
+        ln(T0, "INFO", "kernel.governor", ctx_line(call="main", fill="0.30", pe="1200")),
+        ln(T0, "INFO", "kernel.governor", ctx_line(call="main", fill="0.95", pe="3900")),
+        ln(T0, "INFO", "kernel.governor", ctx_line(call="judge", fill="0.11", pe="450")),
+        ln(T0, "INFO", "kernel.governor", ctx_line(call="main", fill="-", pe="-")),  # счёт n, fill/pe None
+        ln(T0, "INFO", "kernel.governor", "[CTX] call=main pe=oops"),  # лениво: n+1, числа None
+    ]
+    d = sd.build_digest(lines)
+    cx = d["ctx"]
+    main = cx["calls"]["main"]
+    assert main["n"] == 4 and main["fill_ge_090"] == 1  # fill есть только у 2 строк
+    assert main["fill"]["mean"] == 0.625 and main["fill"]["max"] == 0.95
+    assert main["pe"]["max"] == 3900.0
+    assert cx["calls"]["judge"]["n"] == 1 and cx["calls"]["judge"]["fill_ge_090"] == 0
+    assert d["tags"]["CTX"] == 5
+    assert d["metrics"]["n"] == 0  # [CTX] не путается с M6
+
+
+def test_digest_depth_aggregate_and_empty():
+    lines = [ln(T0, "INFO", "bot", "[DEPTH] turns=2 active_s=100.0 span_s=100.0 pause_s=2400"),
+             ln(T0, "INFO", "bot", "[DEPTH] turns=5 active_s=300.0 span_s=900.0 pause_s=2400"),
+             ln(T0, "INFO", "bot", "[DEPTH] turns=bad")]
+    d = sd.build_digest(lines)
+    dp = d["depth"]
+    assert dp["n"] == 2 and dp["bad"] == 1
+    assert dp["turns"]["max"] == 5 and dp["turns"]["min"] == 2
+    assert dp["active_s"]["max"] == 300.0 and dp["span_s"]["max"] == 900.0
+    empty = sd.build_digest([ln(T0, "INFO", "g", metrics_msg())])
+    assert empty["ctx"] == {"calls": {}}
+    assert empty["depth"]["n"] == 0 and empty["depth"]["turns"]["mean"] is None
+
+
+def test_ctx_depth_persisted_and_not_in_drift(paths):
+    logf, opsf = paths
+    write(logf, day_lines(0, 3) + [
+        ln(T0, "INFO", "kernel.governor", ctx_line()),
+        ln(T0, "INFO", "bot", "[DEPTH] turns=3 active_s=50.0 span_s=50.0 pause_s=2400")], mode="w")
+    res = sd.run_once(logf, opsf)
+    assert res["status"] == "written"
+    pl = OpsDB(opsf).last_digest().payload
+    assert pl["ctx"]["calls"]["main"]["n"] == 1 and pl["depth"]["n"] == 1
+    assert "ctx" not in sd.DRIFT_KEYS and "depth" not in sd.DRIFT_KEYS
+
+
+# --- [EPOCH] (M7.3 /newepoch, D7: только отметка) --------------------------------
+def test_parse_epoch_live_line_and_bad():
+    assert sd.parse_epoch("[EPOCH] new ts=1792922418.0") == 1792922418.0
+    for bad in ("[EPOCH] new ts=x", "[EPOCH] new", "[EPOCH] new ts=nan",
+                "[EPOCH] new ts=-5", "[EPOCH] fail=OperationalError", "[DEPTH] turns=1"):
+        assert sd.parse_epoch(bad) is None
+
+
+def test_digest_epoch_count_last_and_bad():
+    lines = [ln(T0, "INFO", "bot", "[EPOCH] new ts=1792922418.0"),
+             ln(T0, "INFO", "bot", "[EPOCH] new ts=1792922814.0"),
+             ln(T0, "ERROR", "bot", "[EPOCH] fail=OperationalError disk"),
+             ln(T0, "INFO", "g", metrics_msg())]
+    d = sd.build_digest(lines)
+    assert d["epoch"] == {"n": 2, "bad": 1, "last_ts": 1792922814.0}
+    assert d["tags"]["EPOCH"] == 3 and d["metrics"]["n"] == 1
+    assert "disk" not in json.dumps(d, ensure_ascii=False)
+    assert sd.build_digest([ln(T0, "INFO", "g", metrics_msg())])["epoch"] == \
+        {"n": 0, "bad": 0, "last_ts": None}
+
+
+def test_epoch_persisted_not_in_drift_baseline_kept(paths):
+    logf, opsf = paths
+    write(logf, day_lines(0, 3) + [ln(T0, "INFO", "bot", "[EPOCH] new ts=1792922418.0")], mode="w")
+    res = sd.run_once(logf, opsf)
+    assert res["status"] == "written"
+    assert OpsDB(opsf).last_digest().payload["epoch"]["n"] == 1
+    assert "epoch" not in sd.DRIFT_KEYS
+    assert res["digest"]["metrics"]["n"] == 3  # эпоха не трогает M6/дрейф
+
+
+# --- [RAG_HYGIENE] (M7.4: только числа, последний скан за окно) ------------------
+RAG_LINE = "[RAG_HYGIENE] rows=12 missing=0 partial=1 orphans=2 orphan_chunks=9 no_hash=0"
+
+
+def test_parse_rag_kinds_and_bad():
+    assert sd.parse_rag(RAG_LINE) == {"kind": "scan", "rows": 12, "missing": 0, "partial": 1,
+                                      "orphans": 2, "orphan_chunks": 9, "no_hash": 0}
+    assert sd.parse_rag("[RAG_HYGIENE] skip=unavailable") == {"kind": "skip"}
+    assert sd.parse_rag("[RAG_HYGIENE] fail=TimeoutError") == {"kind": "fail", "type": "TimeoutError"}
+    assert sd.parse_rag("[RAG_HYGIENE] fail=<x>")["type"] == "?"
+    for bad in ("[RAG_HYGIENE] rows=12", "[RAG_HYGIENE] rows=x missing=0 partial=0 orphans=0 "
+                "orphan_chunks=0 no_hash=0", RAG_LINE.replace("orphans=2", "orphans=-1")):
+        assert sd.parse_rag(bad) is None
+    assert sd.parse_rag("[EPOCH] new ts=1") is None
+
+
+def test_digest_rag_last_scan_fails_skips():
+    lines = [ln(T0, "INFO", "bot", RAG_LINE.replace("orphans=2", "orphans=5")),
+             ln(T0, "WARNING", "bot", "[RAG_HYGIENE] fail=TimeoutError tail=secret"),
+             ln(T0, "INFO", "bot", "[RAG_HYGIENE] skip=unavailable"),
+             ln(T0, "INFO", "bot", RAG_LINE),
+             ln(T0, "INFO", "bot", "[RAG_HYGIENE] rows=oops")]
+    r = sd.build_digest(lines)["rag"]
+    assert r["n"] == 2 and r["bad"] == 1 and r["skip"] == 1
+    assert r["fails"] == 1 and r["fail"] == {"TimeoutError": 1}
+    assert r["last"]["orphans"] == 2 and r["last"]["orphan_chunks"] == 9  # последний, не первый
+    assert "secret" not in json.dumps(r)
+    empty = sd.build_digest([ln(T0, "INFO", "g", metrics_msg())])["rag"]
+    assert empty == {"n": 0, "bad": 0, "skip": 0, "fails": 0, "fail": {}, "last": None}
+
+
+def test_rag_persisted_not_in_drift(paths):
+    logf, opsf = paths
+    write(logf, day_lines(0, 2) + [ln(T0, "INFO", "bot", RAG_LINE)], mode="w")
+    res = sd.run_once(logf, opsf)
+    assert res["status"] == "written" and "rag" not in sd.DRIFT_KEYS
+    assert OpsDB(opsf).last_digest().payload["rag"]["last"]["partial"] == 1
