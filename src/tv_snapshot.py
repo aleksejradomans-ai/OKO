@@ -46,10 +46,11 @@ from requests.auth import HTTPDigestAuth
 
 import config
 
+from secrets_paths import secret_path  # noqa: E402
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 OUT_DIR = config.BASE_DIR / "tv_snapshot"
-CREDS = config.BASE_DIR / "tv_creds.json"
+CREDS = secret_path("tv_creds.json", config.BASE_DIR)
 
 # Пути, которые входят в срез: настройки и состояние, меняющиеся только
 # по чьему-то решению. Порядок фиксирован, чтобы diff двух срезов не

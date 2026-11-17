@@ -132,6 +132,25 @@ class OkoRagDocumentsHandler(FileSystemEventHandler):
         self._maybe_relocate(event.src_path)
 
 
+def _schedule_existing(handler: "KnowledgeHandler", watch_path: Path) -> int:
+    """STARTUP_SCAN: файлы WATCHED_EXTENSIONS в корне watch_path -> handler.on_created (как событие watchdog).
+    Повторное событие того же пути в окне debounce заменяет таймер -- файл ставится в staging один раз."""
+    n = 0
+    for p in sorted(watch_path.iterdir(), key=lambda x: x.name):
+        if p.is_file() and p.suffix.lower() in WATCHED_EXTENSIONS:
+            handler.on_created(_StartupEvent(str(p)))
+            n += 1
+    return n
+
+
+class _StartupEvent:
+    """Минимальное событие для KnowledgeHandler.on_created (атрибуты как у watchdog FileCreatedEvent)."""
+    is_directory = False
+
+    def __init__(self, src_path: str) -> None:
+        self.src_path = src_path
+
+
 def main():
     oko_logger.setup_logging()
 
@@ -164,6 +183,12 @@ def main():
     observer = Observer()
     observer.schedule(event_handler, str(watch_path), recursive=False)
     observer.start()
+    # STARTUP_SCAN (17.11): watchdog сообщает только о НОВЫХ событиях. Файл, положенный в knowledge\, пока
+    # наблюдатель не работал (служба остановлена / упала / перезапуск), события не даёт и остаётся в корне
+    # навсегда -- ни staging, ни approve, ни archived. Стартовый проход ставит такие файлы в ту же очередь
+    # (тот же debounce, backup, guard_path и HITL-approve); archived\ и rejected\ не трогает (не рекурсивно).
+    n_startup = _schedule_existing(event_handler, watch_path)
+    logger.info("Startup scan: %d existing file(s) in %s scheduled for staging", n_startup, watch_path)
 
     oko_rag_docs_dir = OKO_RAG_DIR / "documents"
     oko_rag_docs_dir.mkdir(parents=True, exist_ok=True)

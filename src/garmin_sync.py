@@ -9,7 +9,8 @@ Garmin Connect — только источник. Источник измере�
   `python garmin_sync.py login` — один раз из консоли Оператора: почта/пароль из переменных окружения
   GARMIN_EMAIL / GARMIN_PASSWORD (блок кладёт их туда через Read-Host -AsSecureString, в историю PowerShell
   они не попадают), код MFA — запрос в консоли. Токены сохраняет сама библиотека в OKO_GARMIN_TOKENS
-  (по умолчанию data/.garmin_tokens.json — папка data вне git) и сама их обновляет; пароль нигде не хранится.
+  (по умолчанию data/secrets/.garmin_tokens.json, до переноса — data/.garmin_tokens.json; вне git) и сама их
+  обновляет; пароль нигде не хранится.
   Дальше `sync` работает только по токенам: нет токенов -> GarminAuthNeeded, а не попытка входа.
 
 Сбор (`python garmin_sync.py sync [--date ГГГГ-ММ-ДД] [--days N]`, по умолчанию сегодня и вчера —
@@ -71,7 +72,11 @@ def _base_dir() -> Path:
 
 
 def tokens_path() -> Path:
-    return Path(os.getenv("OKO_GARMIN_TOKENS") or _base_dir() / ".garmin_tokens.json")
+    env = os.getenv("OKO_GARMIN_TOKENS")
+    if env:
+        return Path(env)
+    from secrets_paths import secret_path
+    return secret_path(".garmin_tokens.json", _base_dir())
 
 
 def db_path() -> Path:

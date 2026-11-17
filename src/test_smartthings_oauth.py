@@ -11,7 +11,8 @@ import smartthings_oauth as O
 class FakeServer:
     """Повторяет поведение из документации: каждый refresh выдаёт новый refresh, старый становится недействителен."""
 
-    def __init__(self, first_404=False):
+    def __init__(self, first_404=False, redirect=None):
+        self.redirect = redirect
         self.valid_refresh = set()
         self.n = 0
         self.calls = []
@@ -24,7 +25,7 @@ class FakeServer:
         if base64.b64decode(basic).decode() != "cid:sec":
             return 401, {"error": "invalid_client"}
         if form["grant_type"] == "authorization_code":
-            if form["code"] != "good" or form["redirect_uri"] != O.REDIRECT_URI:
+            if form["code"] != "good" or form["redirect_uri"] != (self.redirect or O.redirect_uri()):
                 return 400, {"error": "invalid_grant"}
         elif form["grant_type"] == "refresh_token":
             if form["refresh_token"] not in self.valid_refresh:

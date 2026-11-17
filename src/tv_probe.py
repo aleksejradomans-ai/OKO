@@ -85,9 +85,10 @@ from requests.auth import HTTPDigestAuth
 
 import config
 
+from secrets_paths import secret_path  # noqa: E402
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-CREDS = config.BASE_DIR / "tv_creds.json"
+CREDS = secret_path("tv_creds.json", config.BASE_DIR)
 
 # GET-пути API v6. Состав — объединение таблиц из документа и путей,
 # встречающихся в рабочих клиентах. Часть заведомо даст 404: это и есть

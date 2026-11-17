@@ -49,6 +49,7 @@ import urllib3
 from requests.auth import HTTPDigestAuth
 
 import config
+from secrets_paths import secret_path
 
 logger = logging.getLogger("oko.tv")
 
@@ -70,8 +71,8 @@ API_VERSION = "6"
 # целиком, вызывающий код передаёт delay больше (см. send_keys).
 DEFAULT_KEY_DELAY_S = 0.4
 
-# Файл с динамически полученной парой. Внутри BASE_DIR (data/), не в src/.
-CREDS_PATH: Path = config.BASE_DIR / "tv_creds.json"
+# Файл с динамически полученной парой. Внутри BASE_DIR (data/secrets/, до переноса -- data/), не в src/.
+CREDS_PATH: Path = secret_path("tv_creds.json", config.BASE_DIR)
 
 # Кнопки `input/key` API v6. Whitelist, а не произвольная строка: телевизор
 # на неизвестное имя отвечает 400 без пояснения, и отладка такого вызова по

@@ -300,9 +300,9 @@ def test_save_then_load_roundtrip(tvmod, tmp_path):
 
 
 def test_creds_default_path_is_under_base_dir_not_src(tvmod):
-    """Файл обязан лежать в data/ (BASE_DIR), иначе попадёт в git.
+    """Файл обязан лежать в data/ (BASE_DIR: data/secrets/ или data/), иначе попадёт в git.
 
-    Проверяется исходное выражение модуля (`config.BASE_DIR / "tv_creds.json"`),
+    Проверяется исходное выражение модуля (`secret_path('tv_creds.json', config.BASE_DIR)`),
     а не подменённое фикстурой значение: именно оно решает, окажется ли
     секрет внутри репозитория.
     """
@@ -319,10 +319,11 @@ def test_creds_default_path_is_under_base_dir_not_src(tvmod):
     ]
     assert len(assigns) == 1, "CREDS_PATH должен задаваться ровно один раз"
     expr = ast.unparse(assigns[0].value)
-    assert expr == "config.BASE_DIR / 'tv_creds.json'", expr
+    assert expr == "secret_path('tv_creds.json', config.BASE_DIR)", expr
 
-    default = config.BASE_DIR / "tv_creds.json"
-    assert default.parent == config.BASE_DIR
+    from secrets_paths import secret_path
+    default = secret_path("tv_creds.json", config.BASE_DIR)
+    assert default.parent in (config.BASE_DIR, config.BASE_DIR / "secrets")
     assert default.parent != pathlib.Path(tvmod.__file__).resolve().parent
 
 
