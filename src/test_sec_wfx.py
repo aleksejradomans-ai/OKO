@@ -102,10 +102,11 @@ needs_ps = pytest.mark.skipif(PS is None, reason="PowerShell not available")
 def _run_install(root: Path, downloads: Path, rel: str, payload: bytes = b"payload-1"):
     (downloads / "a.txt").write_bytes(payload)
     h16 = hashlib.sha256(payload).hexdigest()[:16].upper()
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}   # 5.1 из pwsh 7: свои пути модулей
     r = subprocess.run([PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INSTALL),
                         "-Spec", f"a.txt|{rel}|{h16}", "-Root", str(root), "-Downloads", str(downloads)],
-                       capture_output=True, text=True, timeout=120)
-    return r.returncode, r.stdout + r.stderr
+                       capture_output=True, timeout=120, env=env)
+    return r.returncode, (r.stdout + r.stderr).decode("utf-8", errors="replace")   # байты: без потока чтения в cp1252
 
 
 @pytest.fixture

@@ -1,6 +1,8 @@
 """secrets_paths: выбор пути файла секретов (закрытая папка secrets/ или старое место), приоритет переменных
 окружения модулей; атомарная запись в закрытой папке не открывает права (Windows, иначе пропуск). Временные папки."""
+import codecs
 import json
+import locale
 import os
 import subprocess
 import sys
@@ -100,11 +102,61 @@ def test_acl_compare_logic():
     assert acl_problems(d, set(), me) == ["file ACL empty / unreadable"]
 
 
+def _console_text(raw: bytes) -> str:
+    """Вывод консольных утилит Windows (powershell / icacls) -- в OEM-кодировке консоли, а не в кодировке процесса
+    (на ru-ПК совпадало, на раннере cp1252 -- нет: UnicodeDecodeError в потоке чтения, пустой ACL). Байты -> текст,
+    недекодируемое -> U+FFFD. SID -- ASCII; строка с мусором остаётся в наборе, поэтому проверка ACL не слабеет."""
+    for enc in ("oem", locale.getpreferredencoding(False), "utf-8"):
+        try:
+            codecs.lookup(enc)
+        except LookupError:          # "oem" есть только в Python для Windows
+            continue
+        return raw.decode(enc, errors="replace")
+    return raw.decode("ascii", errors="replace")
+
+
+def _ps_env():
+    """Окружение дочернего Windows PowerShell 5.1 без PSModulePath родителя: pwsh 7 подставляет туда свои пути, и 5.1
+    не грузит Microsoft.PowerShell.Security / Utility (Get-Acl, Get-FileHash). Без переменной 5.1 берёт свои пути."""
+    return {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+
+
+def _powershell(cmd):
+    r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, timeout=60, env=_ps_env())
+    return _console_text(r.stdout)
+
+
+def _sids_from_text(text):
+    return {x.strip() for x in text.splitlines() if x.strip()}
+
+
 def _sids(path):
     cmd = ("(Get-Acl -LiteralPath '%s').Access | ForEach-Object { "
            "$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value }" % str(path))
-    r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, text=True, timeout=60)
-    return {x.strip() for x in r.stdout.splitlines() if x.strip()}
+    return _sids_from_text(_powershell(cmd))
+
+
+def _me():
+    return _powershell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value").strip()
+
+
+def test_console_text_non_ascii_byte_does_not_break_sids():
+    """Регрессия CI (раннер cp1252): байт 0x81 в выводе не роняет чтение; SID-строки целы, мусор не теряется."""
+    raw = b"S-1-5-18\r\n\x81\xfe \xc4\xee\xf1\xf2\xf3\xef\r\nS-1-5-32-544\r\n\r\n"
+    sids = _sids_from_text(_console_text(raw))
+    assert {"S-1-5-18", "S-1-5-32-544"} <= sids and len(sids) == 3
+    me = "S-1-5-21-1-2-3-1001"
+    assert any(x.startswith("file has SIDs beyond") for x in acl_problems({"S-1-5-18", "S-1-5-32-544"}, sids, me))
+    assert acl_problems({"S-1-5-18"}, _sids_from_text(_console_text(b"\x81\r\n")), me) != []
+    assert _sids_from_text(_console_text(b"")) == set() and acl_problems({"S-1-5-18"}, set(), me) == [
+        "file ACL empty / unreadable"]
+
+
+def test_ps_env_drops_parent_psmodulepath(monkeypatch):
+    monkeypatch.setenv("PSModulePath", "C:\\pwsh7\\Modules")
+    monkeypatch.setenv("OKO_PS_ENV_PROBE", "1")
+    e = _ps_env()
+    assert not any(k.upper() == "PSMODULEPATH" for k in e) and e.get("OKO_PS_ENV_PROBE") == "1"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="ACL Windows: проверка наследования прав папки только на Windows")
@@ -112,9 +164,7 @@ def test_atomic_write_in_closed_dir_keeps_closed_acl(tmp_path):
     import smartthings_oauth as o
     d = tmp_path / "secrets"
     d.mkdir()
-    me = subprocess.run(["powershell", "-NoProfile", "-Command",
-                         "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"],
-                        capture_output=True, text=True, timeout=60).stdout.strip()
+    me = _me()
     r = subprocess.run(["icacls", str(d), "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F",
                         f"*{me}:(OI)(CI)F"], capture_output=True, timeout=60)
     assert r.returncode == 0

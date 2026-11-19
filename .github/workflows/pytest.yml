@@ -22,6 +22,7 @@ jobs:
     timeout-minutes: 30
     env:
       PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
       QT_QPA_PLATFORM: offscreen
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
     steps:
@@ -40,11 +41,15 @@ jobs:
           python -m pip install -c requirements.lock -r requirements.txt pytest pillow pypdf scipy python-docx openpyxl pyloudnorm PyQt6 pymupdf
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # cmd, not pwsh: pwsh 7 puts its module paths into PSModulePath, and the Windows PowerShell 5.1 started by the
+      # tests then cannot load Get-Acl / Get-FileHash.
       - name: pytest src
-        shell: pwsh
+        shell: cmd
         run: |
-          python -m pytest src -q -p no:cacheprovider -rxs | Tee-Object -FilePath pytest_src.txt
-          exit $LASTEXITCODE
+          python -m pytest src -q -p no:cacheprovider -rxs > pytest_src.txt 2>&1
+          set PYTEST_RC=%ERRORLEVEL%
+          type pytest_src.txt
+          exit /b %PYTEST_RC%
 
       - name: xfail ids = known list
         if: always()

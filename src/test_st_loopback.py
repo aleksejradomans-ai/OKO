@@ -14,7 +14,7 @@ import urllib.request
 import pytest
 
 import smartthings_oauth as O
-from test_secrets_paths import BROAD, _sids, acl_problems
+from test_secrets_paths import BROAD, _me, _sids, acl_problems
 from test_smartthings_oauth import FakeServer
 
 
@@ -180,9 +180,7 @@ def test_cli_authorize_without_client_stops(tmp_path, monkeypatch, capsys):
 def test_authorize_saves_into_closed_dir_without_broad_groups(tmp_path):
     d = tmp_path / "secrets"
     d.mkdir()
-    me = subprocess.run(["powershell", "-NoProfile", "-Command",
-                         "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"],
-                        capture_output=True, text=True, timeout=60).stdout.strip()
+    me = _me()
     r = subprocess.run(["icacls", str(d), "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F",
                         f"*{me}:(OI)(CI)F"], capture_output=True, timeout=60)
     assert r.returncode == 0
