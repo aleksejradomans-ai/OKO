@@ -379,7 +379,8 @@ def test_bridge_video_source_reads_tv_drives_lamps_no_mic_no_writes(monkeypatch,
     M.save_state(c, M.State(on=True, music=True, source="video", lamps="sync"))
     th = threading.Thread(target=M.run, daemon=True)
     th.start()
-    time.sleep(2.0)                                                   # 0.6 с -- пауза смены стиля, пульс раз в 1 с
+    # ожидание условия, не фиксированная пауза (CI 20.11: за 2 с медленный раннер успел 1 кадр); потолок 15 с
+    assert _wait(lambda: M.read_json(s).get("frames", 0) >= 3 and tv.reads >= 3, 15.0)
     st = M.read_json(s)
     M.save_state(c, M.State(on=False))
     th.join(5)
@@ -468,8 +469,7 @@ def test_stream_nowait_first_frame_confirmed_then_periodic_check():
     _feed(out, 5)
     assert _wait(lambda: any(k == "28~" for _, k, _ in log))           # дальше -- без ожидания ответа
     n28 = sum(1 for _, k, _ in log if k == "28")
-    time.sleep(0.5)                                                    # тишина: последний цвет повторяется контрольным
-    assert sum(1 for _, k, _ in log if k == "28") > n28
+    assert _wait(lambda: sum(1 for _, k, _ in log if k == "28") > n28, 15.0)   # тишина: контрольный кадр повторяет цвет
     assert out.fails == 0 and out.dp24_count == 0 and out.dp28_seen.get(1) and out.ok[1]
     assert "без ожидания" in out.stats()
     out.close(restore=False)
@@ -480,8 +480,17 @@ def test_drain_before_check_frame():
     out.start()
     out.push(1, "a000")
     _feed(out, 6)
-    time.sleep(0.4)
-    i_rx = max(i for i, e in enumerate(log) if e[1] == "rx")
+    seen = {}
+
+    def _check_after_rx():                                            # индекс вычитки фиксируется вместе с условием
+        snap = list(log)
+        rx = [i for i, e in enumerate(snap) if e[1] == "rx"]
+        if rx and any(k == "28" for _, k, _ in snap[rx[-1] + 1:]):
+            seen["log"], seen["i"] = snap, rx[-1]
+            return True
+        return False
+    assert _wait(_check_after_rx, 15.0)
+    log, i_rx = seen["log"], seen["i"]
     assert any(k == "28" for _, k, _ in log[i_rx + 1:])                # после вычитки -- контрольный кадр
     assert log[i_rx][2] == 0                                           # буфер вычитан до пустого
     out.close(restore=False)
@@ -558,7 +567,7 @@ def test_frame_rate_capped_latest_wins():
     assert _wait(lambda: out.sent >= 1)
     t0 = time.monotonic()
     _feed(out, 25, "f", dt=0.01)                                       # 25 целей за ~0.25 с
-    time.sleep(0.3)
+    assert _wait(lambda: [v for _, k, v in log if k == "28~"][-1:] == ["1f02400000000"], 15.0)
     frames = [v for _, k, v in log if k == "28~"]
     assert len(frames) <= int((time.monotonic() - t0) / 0.1) + 2      # не чаще gap
     assert frames[-1] == "1f02400000000"                               # последний кадр побеждает
@@ -570,7 +579,7 @@ def test_check_frame_short_timeout_then_restored():
     out.start()
     out.push(1, "a000")
     _feed(out, 5)
-    time.sleep(0.2)
+    assert _wait(lambda: any(k == "tmo" for _, k, _ in log) and out.dev[1].timeout == 2, 15.0)
     tm = [v for _, k, v in log if k == "tmo"]
     assert tm and all(v == M.LAMP_CHECK_TIMEOUT_S for v in tm)
     assert out.dev[1].timeout == 2                                     # после контрольного -- обратно 2 с

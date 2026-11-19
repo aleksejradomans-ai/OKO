@@ -495,7 +495,9 @@ class _BridgeTV:
         self.mode = "internal"
 
 
-def _run_bridge(monkeypatch, tmp_path, sid, seconds=1.0, tv=None):
+def _run_bridge(monkeypatch, tmp_path, sid, seconds=1.0, tv=None, until=None, cap=15.0):
+    """Мост работает не меньше seconds и дальше -- пока until(status, peak, tv) не выполнено (потолок cap, CI 20.11:
+    на медленном раннере за фиксированную секунду мост не успевал). Проверки -- в тестах, без изменений."""
     import sys
     import threading
     import time as t
@@ -521,11 +523,15 @@ def _run_bridge(monkeypatch, tmp_path, sid, seconds=1.0, tv=None):
     _Stream.opened = 0
     th = threading.Thread(target=M.run, daemon=True)
     th.start()
-    end = t.monotonic() + seconds
+    t0 = t.monotonic()
     peak = 0
-    while t.monotonic() < end:
+    while True:
         peak = max(peak, _Stream.opened)
+        el = t.monotonic() - t0
+        if el >= seconds and (until is None or until(M.read_json(s), peak, tv) or el >= cap):
+            break
         t.sleep(0.02)
+    peak = max(peak, _Stream.opened)
     st = M.read_json(s)
     M.save_state(c, M.State(on=False))
     th.join(5)
@@ -533,12 +539,13 @@ def _run_bridge(monkeypatch, tmp_path, sid, seconds=1.0, tv=None):
 
 
 def test_bridge_in_service_session_never_opens_mic(monkeypatch, tmp_path):
-    peak, st, tv = _run_bridge(monkeypatch, tmp_path, sid=0)
+    peak, st, tv = _run_bridge(monkeypatch, tmp_path, sid=0,
+                               until=lambda st, pk, tv: st.get("mic") == M.MIC_DENIED and tv.posts > 0)
     assert peak == 0 and st["mic"] == M.MIC_DENIED and st["session"] == 0 and tv.posts > 0
 
 
 def test_bridge_in_user_session_opens_mic(monkeypatch, tmp_path):
-    peak, st, _ = _run_bridge(monkeypatch, tmp_path, sid=1)
+    peak, st, _ = _run_bridge(monkeypatch, tmp_path, sid=1, until=lambda st, pk, tv: pk >= 1 and st.get("mic") == "открыт")
     assert peak == 1 and st["mic"] == "открыт"
 
 
@@ -591,7 +598,9 @@ def test_bridge_starts_despite_non_json(monkeypatch, tmp_path):
     tv = _FlakyTV()
     orig = types.SimpleNamespace(from_env=lambda: tv)
     monkeypatch.setattr(tv_control, "TVClient", orig)
-    peak, st, _ = _run_bridge(monkeypatch, tmp_path, sid=1, tv=tv, seconds=3.0)
+    peak, st, _ = _run_bridge(monkeypatch, tmp_path, sid=1, tv=tv, seconds=3.0,
+                              until=lambda st, pk, tv: st.get("running") and st.get("tv_mode") == "expert"
+                              and st.get("frames", 0) > 0)
     assert st["running"] and st["tv_mode"] == "expert" and st["frames"] > 0, st
 
 
@@ -654,7 +663,9 @@ def test_bridge_survives_status_and_control_races(monkeypatch, tmp_path):
     M.save_state(c, M.State(on=True, music=False))
     th = threading.Thread(target=M.run, daemon=True)
     th.start()
-    t.sleep(2.5)
+    t0 = t.monotonic()                                                 # живёт >= 2.5 с; мост успел -- потолок 15 с
+    while not (t.monotonic() - t0 >= 2.5 and tv.posts > 0 and tv.mode == "expert") and t.monotonic() - t0 < 15.0:
+        t.sleep(0.02)
     assert th.is_alive() and tv.posts > 0 and tv.mode == "expert"
     M.save_state(c, M.State(on=False))
     th.join(5)
