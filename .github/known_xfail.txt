@@ -1,0 +1,20 @@
+src/test_b01b_provenance.py::test_gpt_fn4_generic_verb_not_caught_by_words
+src/test_bind_fable.py::test_f12_phrase_key_merges_different_words[\u0440\u043e\u0437\u0430-\u0440\u043e\u0436\u0430]
+src/test_bind_fable.py::test_f12_phrase_key_merges_different_words[\u043a\u043e\u0436\u0430-\u043a\u043e\u0437\u0430]
+src/test_bind_fable.py::test_f12_phrase_key_merges_different_words[\u043a\u0440\u044b\u0448\u0430-\u043a\u0440\u044b\u0441\u0430]
+src/test_bind_fable.py::test_f12_phrase_key_merges_different_words[\u0448\u0435\u0441\u0442\u044c-\u0441\u0435\u0441\u0442\u044c]
+src/test_bind_fable.py::test_f12_phrase_key_merges_different_words[\u043c\u044b\u0448\u043a\u0430-\u043c\u0438\u0441\u043a\u0430]
+src/test_bind_fable.py::test_f12_phrase_key_merges_different_words[\u043d\u0430\u0448 \u0444\u0438\u043b\u044c\u043c-\u043d\u0430\u0441 \u0444\u0438\u043b\u044c\u043c]
+src/test_bind_fable.py::test_f12_phrase_key_merges_different_words[\u0448\u043e\u043a-\u0441\u043e\u043a]
+src/test_bind_fable.py::test_f12_phrase_key_merges_different_words[\u0436\u0430\u043b-\u0437\u0430\u043b]
+src/test_bind_fable.py::test_f15_shell_window_loses_bind_buttons
+src/test_bind_fable.py::test_f16_recount_loses_binding_after_rollback_and_redo
+src/test_bind_fable.py::test_f19_phrase_with_word_net_refused_with_wrong_reason[\u043c\u0435\u043d\u044f \u043d\u0435\u0442 \u0434\u043e\u043c\u0430]
+src/test_bind_fable.py::test_f19_phrase_with_word_net_refused_with_wrong_reason[\u043d\u0435\u0442 \u043d\u0430\u0441\u0442\u0440\u043e\u0435\u043d\u0438\u044f]
+src/test_bind_fable.py::test_f20_router_class_gate_and_handler_parse_differently[\u043f\u043e\u0434\u0441\u0432\u0435\u0442\u043a\u0430 \u0432\u044b\u043a\u043b\u044e\u0447\u0438 \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438]
+src/test_bind_fable.py::test_f20_router_class_gate_and_handler_parse_differently[\u043f\u043e\u0434\u0441\u0432\u0435\u0442\u043a\u0430 \u0432\u044b\u043a\u043b\u044e\u0447\u0438 \u044d\u043a\u0440\u0430\u043d]
+src/test_bind_fable.py::test_f20_router_class_gate_and_handler_parse_differently[\u0433\u0440\u043e\u043c\u043a\u043e\u0441\u0442\u044c \u043e\u0431\u043d\u043e\u0432\u0438]
+src/test_knowledge_indexer_logic.py::test_classify_known_substring_defects[py_with_except_is_not_code]
+src/test_knowledge_indexer_logic.py::test_classify_known_substring_defects[bpmn_is_biometric]
+src/test_knowledge_indexer_logic.py::test_classify_known_substring_defects[planeta_is_project_notes]
+src/test_watcher_startup.py::test_archived_copy_without_db_row_blocks_reindex

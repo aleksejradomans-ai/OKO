@@ -11,6 +11,8 @@
     <- {"ok": true, "replies": ["Подсветка: ..."]}     |  {"ok": false, "error": "auth"}
 Ключ — OKO_SHELL_KEY в .env; пусто -> канал выключен (fail-closed). Текст запроса в журнал не пишется
 (только длина и вид), как у Telegram-обработчиков.
+B18 (18.11, голос окна): запрос может нести поле "audio" — путь к временной записи окна. Обработчик "audio"
+(bot.py -> shell_voice) распознаёт её общей моделью и удаляет файл; дальше текст идёт тем же путём, что набранный.
 """
 from __future__ import annotations
 
@@ -38,6 +40,7 @@ class _Message:
         self.voice = None
         self.document = None
         self.caption = None
+        self.via_voice = False          # B18d: текст пришёл расшифровкой голоса окна (журнал ТОЛК: kind=voice)
         self._sink = sink
 
     async def reply_text(self, text, *args, **kwargs):
@@ -67,13 +70,27 @@ def operator_id(admin_ids, explicit: str = "") -> Optional[int]:
     return next(iter(admins)) if len(admins) == 1 else None
 
 
-async def dispatch(app, user_id: int, text: str, handlers: Dict[str, Callable[..., Awaitable]]) -> List[str]:
-    """Текст -> обработчик Telegram -> список ответов. /tv и /status — как команды, остальное — сообщение."""
+async def dispatch(app, user_id: int, text: str, handlers: Dict[str, Callable[..., Awaitable]],
+                   audio: str = "") -> List[str]:
+    """Текст -> обработчик Telegram -> список ответов. /tv и /status — как команды, остальное — сообщение.
+    audio (B18): путь записи окна -> handlers["audio"](путь) -> текст (файл удаляет обработчик) -> как набранный."""
     sink: List[str] = []
+    if audio:
+        fn = handlers.get("audio")
+        if fn is None:
+            sink.append("Голос в окне пока недоступен.")
+            return sink
+        try:
+            text = await fn(audio)
+        except ValueError as e:                     # shell_voice.VoiceRejected и ошибки записи -- текст для человека
+            sink.append(f"🎙 {e}")
+            return sink
+        sink.append(f"🎙 «{text}»")
     text = (text or "").strip()
     if not text:
         return sink
     msg = _Message(text, user_id, sink)
+    msg.via_voice = bool(audio)
     upd = _update(msg)
     touch = handlers.get("touch")
     if touch is not None:
@@ -128,6 +145,7 @@ class ShellChannel:
                 req = json.loads(line.decode("utf-8"))
                 key = str(req.get("key", "")).encode("utf-8")
                 text = str(req.get("text", ""))
+                audio = str(req.get("audio", "") or "")
             except Exception:
                 _reply(writer, {"ok": False, "error": "bad_request"})
                 return
@@ -138,9 +156,10 @@ class ShellChannel:
             if len(text) > self.max_text:
                 _reply(writer, {"ok": False, "error": "too_long", "max": self.max_text})
                 return
-            logger.info("[SHELL] request len=%d kind=%s", len(text), "cmd" if text.strip().startswith("/") else "text")
+            logger.info("[SHELL] request len=%d kind=%s", len(text),
+                        "audio" if audio else ("cmd" if text.strip().startswith("/") else "text"))
             try:
-                replies = await dispatch(self.app, self.user_id, text, self.handlers)
+                replies = await dispatch(self.app, self.user_id, text, self.handlers, audio=audio)
             except Exception as e:
                 logger.exception("[SHELL] handler failed: %s", type(e).__name__)
                 _reply(writer, {"ok": False, "error": "internal"})

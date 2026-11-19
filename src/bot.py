@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import (
     Application,
@@ -59,6 +59,8 @@ import rating_log        # RATING (12.11): #так/#нетак -- оценки �
 import game_mode         # GAME_MODE v2 (02.11): в игре бот живёт, мозг спит
 import amb_music         # AMB_MUSIC (04.11): подсветка под музыку своим цветом, пульт /amb
 import shell_channel     # SHELL_S1 (10.11): канал desktop для Oko Shell -- те же обработчики, что у Telegram
+import sandbox_talk      # B18 (18.11): режим ТОЛК -- спарринг без привода, мимо маршрутизатора и судьи
+import shell_voice       # B18 (18.11): голос окна -- временная запись -> общий STT -> удаление файла
 import role_guard        # ROLE_R1 (10.11): проверки роли в коде -- ложная память, первое лицо, флаги
 import host_only         # (15.11, этап 1d): Host-Only -- хозяин по id из .env (OKO_HOST_USER_ID), fail-closed
 
@@ -135,6 +137,19 @@ CATEGORY_LABELS = {
 # сброс при рестарте бота — приемлемый UX (пользователь просто заново
 # вызывает /discuss <filename>), не критичная потеря данных.
 discussion_sessions: dict[int, str] = {}
+
+# --- B18 (решение Оператора 18.11 13:39): тумблер БОЕВОЙ / ТОЛК ---
+# Состояние ТОЛЬКО в памяти процесса: старт и рестарт = БОЕВОЙ (fail-closed). Развилка -- в начале handle_message,
+# ДО оценок, раскладки, режима ТВ, печати и маршрутизатора; ветка ТОЛК вызывает только sandbox_talk (модель -- через
+# клиент мозга с его семафором GPU) и не трогает ТВ, лампы, связки, g6.db, секреты и шлюз сети.
+_talk = sandbox_talk.TalkState()
+TALK_JOURNAL = config.BASE_DIR / "sandbox_talk" / "sessions.jsonl"
+
+
+def _talk_keyboard(active: bool) -> ReplyKeyboardMarkup:
+    """Одна кнопка -- переход в другой режим."""
+    return ReplyKeyboardMarkup([[KeyboardButton(sandbox_talk.BTN_LOCK if active else sandbox_talk.BTN_TALK)]],
+                               resize_keyboard=True)
 
 # DISCUSS_RESERVED_TOKENS — бюджет на всё, что добавляется к тексту
 # документа внутри промпта: identity_text (system), XML-обёртка
@@ -1192,6 +1207,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Processing message from {user_id}: len={len(text)}")
     _msg_tick(user_id)                    # счётчик сообщений для расстояния контекста (текст не хранится)
 
+    # B18: тумблер БОЕВОЙ / ТОЛК -- ДО оценок, раскладки, режима ТВ, печати и маршрутизатора.
+    if text == sandbox_talk.BTN_TALK:
+        await handle_talk(update, context)
+        return
+    if text == sandbox_talk.BTN_LOCK:
+        await handle_lock(update, context)
+        return
+    if _talk.active(user_id):
+        await _talk_turn(update, context, user_id, text)
+        return
+
     # RATING (12.11): #так/#нетак -- до раскладки, /tv, маршрутизатора, модели и памяти; в историю не идёт.
     rated = rating_log.parse(text)
     if rated is not None:
@@ -1296,6 +1322,71 @@ async def _reply_with_retry(message, text: str, user_id, reply_markup=None) -> b
                            attempt + 1, user_id, type(e).__name__, SEND_RETRY_DELAYS_S[attempt])
             await asyncio.sleep(SEND_RETRY_DELAYS_S[attempt])
     return False
+
+
+async def handle_talk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/talk -- режим ТОЛК (B18). Только админ (fail-closed)."""
+    if not update.message or not update.message.from_user:
+        return
+    user_id = update.message.from_user.id
+    if user_id not in config.ADMIN_USER_IDS:
+        logger.warning("Unauthorized /talk attempt from user_id=%s", user_id)
+        return
+    _talk.start(user_id)
+    logger.info("[TALK] on user=%s", user_id)
+    await update.message.reply_text(sandbox_talk.T_ON, reply_markup=_talk_keyboard(True))
+
+
+async def handle_lock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/lock -- режим БОЕВОЙ (B18). Только админ."""
+    if not update.message or not update.message.from_user:
+        return
+    user_id = update.message.from_user.id
+    if user_id not in config.ADMIN_USER_IDS:
+        logger.warning("Unauthorized /lock attempt from user_id=%s", user_id)
+        return
+    _talk.stop(user_id)
+    logger.info("[TALK] off user=%s", user_id)
+    await update.message.reply_text(sandbox_talk.T_OFF, reply_markup=_talk_keyboard(False))
+
+
+async def _talk_turn(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, text: str) -> None:
+    """Ход ТОЛК: проверка входа (эвристика, не модель) -> sandbox_talk.answer (один вызов модели, мимо судьи)."""
+    dispatcher = context.application.bot_data["dispatcher"]
+    governor: AgentGovernor = context.application.bot_data["governor"]
+    result = await asyncio.to_thread(dispatcher.dispatch, text)
+    if not result.is_allowed:
+        critical = next((i for i in result.incidents if i.level == "CRITICAL"), None)
+        await update.message.reply_text(f"{sandbox_talk.MARKER}\n[BLOCKED: {critical.category if critical else 'UNKNOWN'}]")
+        return
+    channel = "window" if getattr(update.message, "_sink", None) is not None else "telegram"
+    kind = "voice" if getattr(update.message, "via_voice", False) is True else "text"     # B18d: голос окна
+    reply = await sandbox_talk.answer(_talk, user_id, result.sanitized_text, governor._call_llm_with_timeout,
+                                      journal=TALK_JOURNAL, channel=channel, kind=kind)
+    await _reply_with_retry(update.message, reply[:MAX_MSG_LEN], user_id)
+
+
+async def talk_expiry_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Автосброс ТОЛК -> БОЕВОЙ после 30 мин тишины (раз в минуту)."""
+    for uid in _talk.expire():
+        logger.info("[TALK] expired user=%s", uid)
+        try:
+            await context.bot.send_message(chat_id=uid, text=sandbox_talk.T_EXPIRED, reply_markup=_talk_keyboard(False))
+        except Exception as e:
+            logger.warning("[TALK] expiry notice failed: %s", type(e).__name__)
+
+
+async def _shell_audio(path: str) -> str:
+    """Голос окна (B18): проверка пути -> общий STT (cpu/int8) -> файл удаляется всегда. Ошибка -> ValueError."""
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(shell_voice.transcribe_and_delete, path, stt.transcribe),
+                                      timeout=STT_TIMEOUT_S)
+    except shell_voice.VoiceRejected:
+        raise
+    except stt.SttUnavailable as e:
+        raise ValueError(f"распознавание недоступно: {e}") from e
+    except asyncio.TimeoutError as e:
+        raise ValueError("распознавание не успело") from e
 
 
 async def handle_discuss(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1464,6 +1555,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     user_id = msg.from_user.id
     if user_id not in config.ADMIN_USER_IDS:
+        return
+    if _talk.active(user_id):              # B18: в ТОЛК голосовые Telegram не скачиваются и не распознаются
+        await msg.reply_text(sandbox_talk.T_TG_VOICE)
         return
     vdir = config.BASE_DIR / "voice_tmp"
     vdir.mkdir(parents=True, exist_ok=True)
@@ -1811,6 +1905,13 @@ def _telemetry_status_text() -> str:
         return f"ошибка чтения лога ({type(e).__name__})"
 
 
+def _talk_mode_text(user_id: int) -> str:
+    if not _talk.active(user_id):
+        return "БОЕВОЙ (ДОМ)"
+    left = _talk.left_s(user_id) or 0
+    return f"ТОЛК · СПАРРИНГ · READ-ONLY, автосброс через {int(left // 60)} мин"
+
+
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Админ-команда /status — снимок здоровья системы без чтения логов.
     Закрыта по умолчанию: без ADMIN_USER_IDS в .env команда не отвечает
@@ -1876,6 +1977,8 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"transport_failures: {state.get('transport_failures', 0)}\n"
         f"stagnation_breaks: {state.get('stagnation_breaks', 0)}\n"
         f"last_stagnation_reason: {state.get('last_stagnation_reason')}\n"
+        "\n"
+        f"MODE (B18): {_talk_mode_text(update.message.from_user.id)}\n"
         "\n"
         f"INPUT FILTERING (sliding window, last {input_monitor.window_size} checked)\n"
         f"sample_size: {input_monitor.get_sample_size()}\n"
@@ -2776,7 +2879,8 @@ async def post_init(app: Application) -> None:
                        config.COLLECTOR_DIR)
     try:   # SHELL_S1 (10.11): окно на ПК -> ТЕ ЖЕ обработчики Telegram (без второй ветки мимо судьи)
         app.bot_data["_shell"] = await shell_channel.start_from_config(app, config, {
-            "text": handle_message, "tv": handle_tv, "status": handle_status, "touch": _touch_activity})
+            "text": handle_message, "tv": handle_tv, "status": handle_status, "touch": _touch_activity,
+            "talk": handle_talk, "lock": handle_lock, "audio": _shell_audio})       # B18
     except Exception as e:
         logger.warning("[SHELL] not started: %s: %s", type(e).__name__, e)
 
@@ -2879,6 +2983,8 @@ def main():
     app.add_handler(CommandHandler("status", handle_status))
     app.add_handler(CommandHandler("memory", handle_memory))
     app.add_error_handler(on_error)
+    app.add_handler(CommandHandler("talk", handle_talk))                 # B18: режим ТОЛК
+    app.add_handler(CommandHandler("lock", handle_lock))                 # B18: режим БОЕВОЙ
     app.add_handler(CommandHandler("discuss", handle_discuss))
     app.add_handler(CommandHandler("enddiscuss", handle_enddiscuss))
     app.add_handler(CommandHandler("forget", handle_forget))
@@ -2934,6 +3040,7 @@ def main():
     # heartbeat'а подряд — однозначный признак зависания, не просто
     # случайной задержки одного тика).
     app.job_queue.run_repeating(heartbeat_job, interval=30.0, first=0.0)
+    app.job_queue.run_repeating(talk_expiry_job, interval=60.0, first=60.0, name="talk_expiry")   # B18
     app.job_queue.run_repeating(memory_ttl_job, interval=6 * 3600, first=60.0)
     # M7 сон: тик раз в SLEEP_CHECK_INTERVAL_S; решение — в sleep_cycle_job.
     app.job_queue.run_repeating(

@@ -1,0 +1,12 @@
+{
+ "_about": "Белый список сетевого шлюза src/net_gateway.py. Меняется только решением Оператора. Только GET, только HTTPS.",
+ "hosts": {
+  "www.anthropic.com": ["/legal/", "/robots.txt"],
+  "anthropic.com": ["/legal/", "/robots.txt"]
+ },
+ "methods": ["GET"],
+ "content_types": ["text/html", "text/plain"],
+ "limits": {"min_interval_s": 10, "per_day": 20, "max_bytes": 2097152, "connect_timeout_s": 10, "read_timeout_s": 20,
+            "max_redirects": 3},
+ "user_agent": "OkoGateway/1.0 (local assistant; manual operator-approved fetch)"
+}

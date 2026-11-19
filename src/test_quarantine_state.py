@@ -14,7 +14,7 @@ import quarantine_state as qs
 T0 = dt.datetime(2026, 11, 17, 12, 40, 0)
 
 
-def make_q(root: Path, extra: int = 0, name: str = "q") -> Path:
+def make_q(root: Path, extra: int = 0, name: str = "q", at: dt.datetime = T0) -> Path:
     q = root / name
     (q / "archived").mkdir(parents=True)
     (q / "root").mkdir()
@@ -27,7 +27,7 @@ def make_q(root: Path, extra: int = 0, name: str = "q") -> Path:
     lines = ["path\tsize\tsha256\treason\tmoved_at\tquarantine_path"]
     for rel, reason, data in rows:
         (q / rel).write_bytes(data)
-        lines.append(f"knowledge/{rel}\t{len(data)}\t-\t{reason}\t{T0.isoformat()}\t{rel}")
+        lines.append(f"knowledge/{rel}\t{len(data)}\t-\t{reason}\t{at.isoformat()}\t{rel}")
     (q / "manifest.tsv").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return q
 
@@ -154,7 +154,7 @@ def test_dips_rule_edges():
 
 
 def test_cli_snapshot_and_purge_json(tmp_path):
-    q = make_q(tmp_path)
+    q = make_q(tmp_path, at=dt.datetime.now())        # CLI считает возраст от реального «сейчас» (18.11: T0 устарел -- бомба времени)
     db = tmp_path / "c.db"
     cli = Path(__file__).resolve().parent.parent / "tools" / "quarantine_state_cli.py"
     out = subprocess.run([sys.executable, str(cli), "--db", str(db), "snapshot", str(q)], capture_output=True, check=True)

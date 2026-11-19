@@ -1015,6 +1015,7 @@ _MODULE_SIG_RE = re.compile(
 BOT_COMMANDS = frozenset({
     "status", "memory", "discuss", "enddiscuss", "forget", "newepoch", "tv", "garmin", "force_brain", "cam",
     "amb",                                   # AMB_MUSIC (04.11): пульт подсветки под музыку
+    "talk", "lock",                          # B18 (18.11): тумблер БОЕВОЙ / ТОЛК
 })
 # /tv с аргументом-путем: «/tv ambilight/mode», «/tv audio/volume».
 _FAKE_TV_PATH_RE = re.compile(r"/tv\s+[a-z_]+/")

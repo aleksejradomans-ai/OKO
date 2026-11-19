@@ -7,7 +7,15 @@
 ТЕ ЖЕ обработчики, что у Telegram (маршрутизатор, мозг, судья, D_GUARD). Логика без GUI — src/shell_client.py.
 Тахограф — src/hud_state.py (только чтение: хвост лога, Ollama, служба).
 Ctrl+Alt+O — показать/спрятать; Esc — свернуть в полоску; трей — стекло, поверх окон, выход.
-Голос (S4) и отмена серии «стоп» — кнопки видны, но выключены честно: функция ещё не сделана.
+Отмена серии «стоп» — кнопка видна, но выключена честно: функция ещё не сделана.
+B18b (18.11): тумблер БОЕВОЙ / ТОЛК в шапке (шлёт /talk или /lock; режим показывается по ответу бота), полоса-маркер
+[ТОЛК · СПАРРИНГ · READ-ONLY] над полем ввода в ТОЛК; 🎙 — старт / стоп записи, автостоп 30 с, запись
+%TEMP%\\oko_voice\\<uuid>.wav уходит боту путём (распознаёт и удаляет бот; окно удаляет тоже, если ответа нет).
+Новый код окна применяется перезапуском окна (трей -> «Выход», затем запуск снова): это не служба, UAC не нужен.
+B18c (18.11, Оператор 15:12): в свёрнутой плашке -- тот же тумблер режима и та же 🎙 (одно состояние на оба вида),
+строка ТОЛК с таймером автосброса и короткий ответ (полный -- в развёрнутом чате, всплывающей подсказкой -- целиком).
+Кнопки режима и 🎙 выключены, пока Око отвечает (раньше нажатие в это время молча терялось).
+Во время записи -- секундомер «● 0:07 / 0:30» (красная точка) в шапке и в плашке; на 🎙 -- обратный отсчёт.
 """
 from __future__ import annotations
 
@@ -36,7 +44,7 @@ UI = "Segoe UI Variable Text, Segoe UI"
 MONO = "Cascadia Mono, Consolas"
 HOTKEY_ID, WM_HOTKEY = 0x4F53, 0x0312
 MOD_ALT, MOD_CONTROL, MOD_NOREPEAT = 0x0001, 0x0002, 0x4000
-W_PANEL, H_PANEL, H_PILL = 440, 680, 56
+W_PANEL, H_PANEL, H_PILL, H_PILL_INFO = 440, 680, 56, 28
 
 QSS = f"""
 QWidget#root {{ background: transparent; }}
@@ -63,6 +71,15 @@ QPushButton:disabled {{ color: #5C6470; background: rgba(255,255,255,0.03); }}
 QPushButton#ghost {{ background: transparent; border: none; color: #A3ACB9; font-size: 13pt; }}
 QPushButton#ghost:hover {{ background: rgba(255,255,255,0.08); }}
 QPushButton#yes {{ background: {ACCENT}; color: #0B1620; border: none; font-weight: 600; }}
+QPushButton#mode {{ min-height: 28px; padding: 0 10px; border-radius: 10px; font-size: 9pt; }}
+QPushButton#modeTalk {{ min-height: 28px; padding: 0 10px; border-radius: 10px; font-size: 9pt;
+                       background: rgba(242,193,78,0.18); border: 1px solid rgba(242,193,78,0.45); color: #F5D27A; }}
+QPushButton#micOn {{ background: rgba(255,107,107,0.22); border: 1px solid rgba(255,107,107,0.55); color: #FFB3B3; }}
+QLabel#recClock {{ color: #FF6B6B; font-family: {MONO}; font-size: 9pt; font-weight: 600; padding: 0 4px; }}
+QLabel#pillInfo {{ color: #DDE3EA; font-family: {UI}; font-size: 9pt; padding: 0 4px; }}
+QLabel#pillTalk {{ color: #F5D27A; font-family: {MONO}; font-size: 8pt; padding: 0 4px; }}
+QLabel#talkBar {{ background: rgba(242,193,78,0.12); color: #F5D27A; border-radius: 8px; padding: 4px 8px;
+                 font-family: {MONO}; font-size: 8pt; }}
 QPushButton#stop {{ background: rgba(255,107,107,0.14); border: none; color: #FF9A9A; }}
 """
 
@@ -115,15 +132,17 @@ class _AskSignals(QObject):
 
 
 class AskJob(QRunnable):
-    def __init__(self, conn, text: str):
+    def __init__(self, conn, text: str, audio: str = ""):
         super().__init__()
-        self.conn, self.text, self.signals = conn, text, _AskSignals()
+        self.conn, self.text, self.audio, self.signals = conn, text, audio, _AskSignals()
 
     def run(self):
         try:
-            ans = sc.ask(self.conn, self.text)
+            ans = sc.ask(self.conn, self.text, audio=self.audio)
         except Exception as e:   # окно не падает из-за канала
             ans = sc.Answer(False, error=f"Сбой окна: {type(e).__name__}")
+        finally:
+            sc.discard(self.audio)   # B18b: запись не переживает запрос (бот удаляет сам; это страховка)
         self.signals.done.emit(ans, self.text)
 
 
@@ -228,6 +247,8 @@ class Shell(QWidget):
         self.confirm_left = 0
         self.hotkey_ok = False
         self.pool = QThreadPool.globalInstance()
+        self.mode = sc.ModeView()
+        self.rec = sc.Recorder()
         self.setObjectName("root")
         self.setWindowTitle("Око")
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
@@ -242,6 +263,15 @@ class Shell(QWidget):
         self.resize(W_PANEL, H_PANEL)
         self.confirm_timer = QTimer(self)
         self.confirm_timer.timeout.connect(self._confirm_tick)
+        self.rec_timer = QTimer(self)
+        self.rec_timer.timeout.connect(self._rec_tick)
+        self.mode_timer = QTimer(self)
+        self.mode_timer.timeout.connect(self._render_mode)
+        self.mode_timer.start(30000)
+        self.pill_reply_timer = QTimer(self)
+        self.pill_reply_timer.setSingleShot(True)
+        self.pill_reply_timer.timeout.connect(self._pill_reply_clear)
+        self._render_mode()
 
     # ---------- сборка ----------
     def _build(self):
@@ -261,6 +291,14 @@ class Shell(QWidget):
         self.sub = _label("канал 127.0.0.1", "sub")
         tbox.addWidget(self.sub)
         head.addLayout(tbox, 1)
+        self.rec_clock = _label("", "recClock")       # секундомер записи в шапке (B18c)
+        self.rec_clock.hide()
+        head.addWidget(self.rec_clock)
+        self.b_mode = QPushButton(sc.MODE_TEXT[sc.COMBAT])
+        self.b_mode.setObjectName("mode")
+        self.b_mode.setToolTip("Режим: БОЕВОЙ / ТОЛК (спарринг без привода). Нажатие шлёт /talk или /lock боту")
+        self.b_mode.clicked.connect(self._toggle_mode)
+        head.addWidget(self.b_mode)
         b_min = QPushButton("–")
         b_min.setObjectName("ghost")
         b_min.setToolTip("Свернуть в полоску (Esc)")
@@ -320,6 +358,10 @@ class Shell(QWidget):
         self.card.hide()
         pl.addWidget(self.card)
 
+        self.talk_bar = _label(sc.talk.MARKER, "talkBar")
+        self.talk_bar.hide()
+        pl.addWidget(self.talk_bar)
+
         foot = QHBoxLayout()
         foot.setSpacing(8)
         self.input = QLineEdit()
@@ -327,9 +369,11 @@ class Shell(QWidget):
         self.input.setMaxLength(4000)
         self.input.returnPressed.connect(self._send_input)
         foot.addWidget(self.input, 1)
-        mic = QPushButton("🎙")
-        mic.setEnabled(False)
-        mic.setToolTip("Голос — этап S4, пока выключен")
+        self.mic = mic = QPushButton("🎙")
+        mic.setEnabled(self.conn is not None)
+        mic.setToolTip("Голос: нажать — запись, ещё раз — отправить (автостоп 30 с)" if self.conn is not None
+                       else "Голос недоступен: канал окна не настроен")
+        mic.clicked.connect(self._mic_clicked)
         stop = QPushButton("■")
         stop.setObjectName("stop")
         stop.setEnabled(False)
@@ -350,6 +394,18 @@ class Shell(QWidget):
         pr.addWidget(_label("Око", "title"))
         self.pill_line = _label("", "tacho")
         pr.addWidget(self.pill_line, 1)
+        self.pill_rec = _label("", "recClock")       # секундомер записи в плашке: на время записи вместо строки связи
+        self.pill_rec.hide()
+        pr.addWidget(self.pill_rec, 1)
+        # B18c: режим и голос без разворачивания -- те же обработчики, одно состояние (self.mode / self.rec)
+        self.pill_mode = QPushButton(sc.MODE_TEXT[sc.COMBAT])
+        self.pill_mode.setObjectName("mode")
+        self.pill_mode.clicked.connect(self._toggle_mode)
+        pr.addWidget(self.pill_mode)
+        self.pill_mic = QPushButton("🎙")
+        self.pill_mic.setEnabled(self.conn is not None)
+        self.pill_mic.clicked.connect(self._mic_clicked)
+        pr.addWidget(self.pill_mic)
         b_up = QPushButton("▴")
         b_up.setObjectName("ghost")
         b_up.setToolTip("Развернуть")
@@ -357,6 +413,12 @@ class Shell(QWidget):
         pr.addWidget(b_up)
         self.pill.hide()
         outer.addWidget(self.pill)
+        self.pill_talk = _label("", "pillTalk")          # строка ТОЛК: маркер + таймер автосброса
+        self.pill_info = _label("", "pillInfo")          # короткий ответ / «Око слушает запись…»
+        for lb in (self.pill_talk, self.pill_info):
+            lb.setContentsMargins(16, 0, 12, 0)
+            lb.hide()
+            outer.addWidget(lb)
         self._add("Око на связи через этот ПК. Команды и вопросы — как в Telegram.", "oko",
                   "канал desktop · 127.0.0.1")
 
@@ -366,14 +428,17 @@ class Shell(QWidget):
         self.feed.addWidget(b)
         return b
 
-    def _send(self, text: str, shown: str = None):
-        if self.busy or not text.strip():
+    def _send(self, text: str, shown: str = None, audio: str = ""):
+        if self.busy or not (text.strip() or audio):
+            sc.discard(audio)
             return
         self.busy = True
         self.input.setEnabled(False)
+        self._set_controls(False)
         self._add(shown if shown is not None else text, "mine", time.strftime("%H:%M:%S"))
-        self.thinking = self._add("…", "oko", "Око обрабатывает")
-        job = AskJob(self.conn, text)
+        self.thinking = self._add("…", "oko", "Око слушает запись" if audio else "Око обрабатывает")
+        self._pill_reply("Око слушает запись…" if audio else "Око обрабатывает…", "", hold=False)
+        job = AskJob(self.conn, text, audio)
         job.signals.done.connect(self._on_answer)
         self.pool.start(job)
         self._render_tacho()
@@ -387,6 +452,7 @@ class Shell(QWidget):
     def _on_answer(self, ans, sent_text):
         self.busy = False
         self.input.setEnabled(True)
+        self._set_controls(self.conn is not None)
         self.input.setFocus()
         if getattr(self, "thinking", None) is not None:
             self.thinking.setParent(None)
@@ -401,7 +467,126 @@ class Shell(QWidget):
             self._add(sc.clean(r), "oko", stamp)
             if sc.needs_confirm(r):
                 self._show_confirm(sc.confirm_text(r))
+        if ans.ok:
+            self.mode.update(sent_text, ans.replies)
+        if not ans.ok:
+            self._pill_reply(ans.error, ans.error)
+        elif ans.replies:
+            full = "\n\n".join(sc.clean(r) for r in ans.replies)
+            self._pill_reply(" · ".join(x for x in (sc.short_reply(r) for r in ans.replies[-2:]) if x), full)
+        else:
+            self._pill_reply("Ответа нет.", "")
+        self._render_mode()
         self._render_tacho()
+
+    # ---------- плашка (B18c) ----------
+    def _set_controls(self, on: bool):
+        for b in (self.mic, self.pill_mic, self.b_mode, self.pill_mode):
+            b.setEnabled(on)
+
+    def _pill_reply(self, short: str, full: str, hold: bool = True):
+        self.pill_info.setText(short)
+        self.pill_info.setToolTip(full)
+        self.pill_info.setVisible(self.compact and bool(short))
+        if hold:
+            self.pill_reply_timer.start(sc.PILL_REPLY_S * 1000)
+        else:
+            self.pill_reply_timer.stop()
+        self._fit_pill()
+
+    def _pill_reply_clear(self):
+        self.pill_info.setText("")
+        self.pill_info.setToolTip("")
+        self.pill_info.hide()
+        self._fit_pill()
+
+    def _fit_pill(self):
+        if not self.compact:
+            return
+        extra = sum(H_PILL_INFO for lb in (self.pill_talk, self.pill_info) if not lb.isHidden())
+        self.setFixedSize(W_PANEL + 80, H_PILL + extra)
+
+    # ---------- режим БОЕВОЙ / ТОЛК (B18b) ----------
+    def _toggle_mode(self):
+        cmd = self.mode.toggle_command()
+        self._send(cmd, "ТОЛК" if cmd == "/talk" else "БОЕВОЙ")
+
+    def _render_mode(self):
+        m = self.mode.current()
+        talk_on = m == sc.TALK
+        tip = f"Режим {'ТОЛК' if talk_on else 'БОЕВОЙ'}. Нажать — {'/lock (БОЕВОЙ)' if talk_on else '/talk (ТОЛК, спарринг без привода)'}"
+        for b in (self.b_mode, self.pill_mode):
+            b.setText(sc.MODE_TEXT[m])
+            b.setObjectName("modeTalk" if talk_on else "mode")
+            b.setToolTip(tip)
+            b.style().unpolish(b)
+            b.style().polish(b)
+        line = sc.talk_line(self.mode)
+        self.talk_bar.setVisible(talk_on)
+        self.talk_bar.setText(line)
+        self.pill_talk.setText(line)
+        self.pill_talk.setVisible(self.compact and talk_on)
+        self._fit_pill()
+        self.input.setPlaceholderText("Спарринг: мысли вслух, команды не исполняются…" if talk_on else "Напиши Оку…")
+
+    # ---------- голос окна (B18b) ----------
+    def _mic_clicked(self):
+        if self.rec.active:
+            self._rec_finish()
+            return
+        if self.busy:
+            return
+        try:
+            self.rec.start()
+        except Exception as e:      # нет микрофона / нет sounddevice -- честный текст, окно живёт
+            self._add(f"Микрофон не открылся: {type(e).__name__}", "err", time.strftime("%H:%M:%S"))
+            return
+        self._mic_look("micOn", "■ 30")
+        self.pill_line.hide()
+        for lb in (self.rec_clock, self.pill_rec):
+            lb.show()
+        self.rec_timer.start(200)
+        self._rec_tick()
+
+    def _mic_look(self, name: str, text: str):
+        for b in (self.mic, self.pill_mic):
+            b.setObjectName(name)
+            b.setText(text)
+            b.style().unpolish(b)
+            b.style().polish(b)
+
+    def _rec_tick(self):
+        if not self.rec.active:
+            self.rec_timer.stop()
+            return
+        if self.rec.due():
+            self._rec_finish()
+            return
+        el = self.rec.elapsed()
+        left = max(0, int(sc.MAX_REC_S - el))
+        for b in (self.mic, self.pill_mic):
+            b.setText(f"■ {left}")
+        clock = sc.rec_clock(el)
+        for lb in (self.rec_clock, self.pill_rec):
+            lb.setText(clock)
+
+    def _rec_finish(self):
+        self.rec_timer.stop()
+        for lb in (self.rec_clock, self.pill_rec):
+            lb.hide()
+            lb.setText("")
+        self.pill_line.show()
+        try:
+            path, secs = self.rec.stop()
+        except Exception as e:
+            path, secs = None, 0.0
+            self._add(f"Запись не сохранилась: {type(e).__name__}", "err", time.strftime("%H:%M:%S"))
+        self._mic_look("", "🎙")
+        if path is None:
+            self._add("Запись слишком короткая — не отправлена.", "oko", time.strftime("%H:%M:%S"))
+            self._pill_reply("Запись слишком короткая — не отправлена.", "")
+            return
+        self._send("", f"🎙 запись {secs:.1f} с", audio=str(path))
 
     # ---------- подтверждение (роль P4) ----------
     def _show_confirm(self, question: str):
@@ -451,8 +636,11 @@ class Shell(QWidget):
         self.compact = on
         self.panel.setVisible(not on)
         self.pill.setVisible(on)
+        self.pill_talk.setVisible(on and self.mode.current() == sc.TALK)
+        self.pill_info.setVisible(on and bool(self.pill_info.text()))
         if on:
             self.setFixedSize(W_PANEL + 80, H_PILL)
+            self._fit_pill()
         else:
             self.setMinimumSize(0, 0)
             self.setMaximumSize(16777215, 16777215)
@@ -579,6 +767,11 @@ def main() -> int:
     thread.start()
 
     def shutdown():
+        if shell.rec.active:
+            try:
+                shell.rec.cancel()
+            except Exception:
+                pass
         shell.unregister_hotkey()
         thread.quit()
         thread.wait(3000)

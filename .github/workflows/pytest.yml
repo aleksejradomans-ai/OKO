@@ -1,0 +1,60 @@
+# CI: the test suite of the public snapshot on a clean Windows runner.
+# Same command as the local "pytest src" run on the exported snapshot; xfail ids must equal .github/known_xfail.txt.
+# No secrets, read-only token, network only for installing packages.
+name: pytest
+
+on:
+  push:
+    branches: [oko-live, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pytest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PYTHONIOENCODING: utf-8
+      QT_QPA_PLATFORM: offscreen
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies (versions pinned by requirements.lock)
+        shell: pwsh
+        run: |
+          python --version
+          python -m pip install -c requirements.lock -r requirements.txt pytest pillow pypdf scipy python-docx openpyxl pyloudnorm PyQt6 pymupdf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: pytest src
+        shell: pwsh
+        run: |
+          python -m pytest src -q -p no:cacheprovider -rxs | Tee-Object -FilePath pytest_src.txt
+          exit $LASTEXITCODE
+
+      - name: xfail ids = known list
+        if: always()
+        shell: pwsh
+        run: |
+          $known = @(Get-Content .github/known_xfail.txt | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim() } | Sort-Object)
+          $got = @(Get-Content pytest_src.txt | Where-Object { $_.StartsWith("XFAIL ") } | ForEach-Object { ($_.Substring(6) -split ' - ', 2)[0].Trim() } | Sort-Object)
+          $unexpected = @($got | Where-Object { $known -notcontains $_ })
+          $missing = @($known | Where-Object { $got -notcontains $_ })
+          foreach ($x in $unexpected) { Write-Output "UNEXPECTED XFAIL $x" }
+          foreach ($x in $missing) { Write-Output "MISSING XFAIL $x" }
+          Write-Output "xfail: got $($got.Count), known $($known.Count), unexpected $($unexpected.Count), missing $($missing.Count)"
+          if ($unexpected.Count -or $missing.Count) { exit 1 }
