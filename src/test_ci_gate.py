@@ -13,6 +13,8 @@
    pull_request; один прогон на коммит (concurrency по github.sha, без отмены); в обоих джобах -- кэш pip по
    requirements.txt + requirements.lock, --durations=30 у pytest src, отчёты тестов -- артефакт (if: always(),
    имя с платформой, хранение 7 дней). Имена джобов не меняются (проверки защиты веток привязаны к ним).
+5. B27: каждый `uses:` в workflow закреплён полным 40-символьным SHA коммита действия с комментарием `# vX.Y.Z`
+   (не тег: тег можно передвинуть); в обоих джобах -- одни и те же действия с одними и теми же SHA.
 """
 from __future__ import annotations
 
@@ -182,14 +184,55 @@ def test_both_jobs_cache_pip_durations_and_upload_reports():
     jobs = _job_blocks(_wf_text())
     assert sorted(jobs) == ["pytest-linux", "pytest-windows"]               # имена проверок защиты веток
     for plat, job in (("windows", jobs["pytest-windows"]), ("linux", jobs["pytest-linux"])):
-        assert "uses: actions/setup-python@v5" in job and "cache: pip" in job
+        assert "uses: actions/setup-python@" in job and "cache: pip" in job
         assert "cache-dependency-path: |\n            requirements.txt\n            requirements.lock" in job
         src_cmd = [x.strip() for x in job.splitlines() if x.strip().startswith("python -m pytest src ")]
         assert len(src_cmd) == 1 and " --durations=30 " in src_cmd[0] and "--junitxml=pytest_src.xml" in src_cmd[0]
-        i = job.index("uses: actions/upload-artifact@v4")
+        i = job.index("uses: actions/upload-artifact@")
         step = job[job.rindex("- name:", 0, i):]
         assert "if: always()" in step and f"name: pytest-reports-{plat}" in step and "retention-days: 7" in step
         for f in ("pytest_src.txt", "pytest_src.xml", "pytest_extra.txt", "pytest_extra.xml"):
             assert f"            {f}" in step, f
         assert job.index("skipped tests = known list") < i                    # отчёты -- после всех проверок
     assert "secrets." not in _wf_text()
+
+
+# --- B27: действия закреплены полным SHA -----------------------------------------------------------------------------
+_USES_RE = re.compile(r"^\s*(?:- )?uses:\s*(\S+)(.*)$")
+_PIN_RE = re.compile(r"^(actions/[a-z-]+)@([0-9a-f]{40})$")
+_TAG_COMMENT_RE = re.compile(r"^\s+# v\d+\.\d+\.\d+$")
+
+
+def _uses_lines(text: str) -> list:
+    return [m.groups() for m in (_USES_RE.match(x) for x in text.splitlines() if not x.lstrip().startswith("#")) if m]
+
+
+def test_every_uses_is_pinned_to_a_full_sha_with_tag_comment():
+    uses = _uses_lines(_wf_text())
+    assert len(uses) == 6                                           # 3 действия x 2 джоба
+    for ref, tail in uses:
+        m = _PIN_RE.match(ref)
+        assert m, f"не закреплено полным SHA: {ref}"
+        assert _TAG_COMMENT_RE.match(tail), f"нет комментария # vX.Y.Z: {ref}{tail}"
+    assert "@v4\n" not in _wf_text() and "@v5\n" not in _wf_text()
+
+
+def test_both_jobs_use_the_same_pinned_actions():
+    jobs = _job_blocks(_wf_text())
+    per = {k: sorted(r + t for r, t in _uses_lines(v)) for k, v in jobs.items()}
+    assert per["pytest-windows"] == per["pytest-linux"]
+    names = sorted(_PIN_RE.match(r).group(1) for r, _ in _uses_lines(jobs["pytest-linux"]))
+    assert names == ["actions/checkout", "actions/setup-python", "actions/upload-artifact"]
+    majors = {_PIN_RE.match(r).group(1): t.strip()[3] for r, t in _uses_lines(jobs["pytest-linux"])}
+    assert majors == {"actions/checkout": "4", "actions/setup-python": "5", "actions/upload-artifact": "4"}
+
+
+@pytest.mark.parametrize("bad", [
+    "      - uses: actions/checkout@v4",
+    "      - uses: actions/checkout@11d5960a  # v4.4.0",
+    "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af67726Z  # v4.4.0",
+])
+def test_pin_check_rejects_tags_short_sha_and_missing_comment(bad):
+    (ref, tail), = _uses_lines(bad + "\n")
+    assert not (_PIN_RE.match(ref) and _TAG_COMMENT_RE.match(tail))

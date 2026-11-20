@@ -25,14 +25,50 @@ import os
 import sqlite3
 import stat
 import time
+import shutil
 import uuid
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import logger as oko_logger
 from src.path_guard import SecurityAccessViolation, guard_path
 
 logger = oko_logger.get_logger("kernel.staging")
+
+# B27 (T3): входящий файл, байт-в-байт равный уже архивированному (тот же размер и sha256 в
+# <input_dir>/archived, не рекурсивно) или уже ждущему подтверждения в staging, в карантин не ставится: без задачи,
+# без approve, без второй записи в индекс и без ошибки (раньше: тот же файл -> повторный approve -> второй файл в
+# archived; одноимённый файл в staging -> WinError 183 у наблюдателя). Файл не удаляется -- переносится в
+# <input_dir>/archived/duplicates (наблюдатель и стартовый проход его не видят: не рекурсивны).
+ARCHIVE_DIRNAME = "archived"
+DUPLICATES_DIRNAME = "duplicates"
+
+
+def _sha256_file(p: Path) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def same_bytes_in(folder: Path, size: int, digest: str) -> Optional[Path]:
+    """Обычный файл (не ссылка) в folder (не рекурсивно) с тем же размером и sha256; нет -- None.
+    sha256 считается только у файлов того же размера."""
+    try:
+        entries = sorted(folder.iterdir(), key=lambda x: x.name)
+    except OSError:
+        return None
+    for q in entries:
+        try:
+            if _is_link(q) or not q.is_file() or q.stat().st_size != size:
+                continue
+            if _sha256_file(q) == digest:
+                return q
+        except OSError:
+            continue
+    return None
 
 
 class StagingPathRejected(ValueError):
@@ -81,8 +117,37 @@ class StagingManager:
 
         self.staging_dir.mkdir(parents=True, exist_ok=True)
 
-    def move_to_staging(self, src_path: Path | str) -> str:
+    def known_copy(self, src: Path, digest: str) -> Optional[Path]:
+        """B27: копия с тем же sha256 уже в archived (не рекурсивно) или уже ждёт подтверждения в staging."""
+        size = src.stat().st_size
+        for folder in (self.input_dir / ARCHIVE_DIRNAME, self.staging_dir):
+            hit = same_bytes_in(folder, size, digest)
+            if hit is not None:
+                return hit
+        return None
+
+    def _skip_duplicate(self, src: Path, digest: str, twin: Path) -> None:
+        """B27: дубль -> archived/duplicates (не удаление), INFO в журнал; задачи нет, исключения нет."""
+        where = "archived" if twin.parent == self.input_dir / ARCHIVE_DIRNAME else "staging"
+        dup_dir = self.input_dir / ARCHIVE_DIRNAME / DUPLICATES_DIRNAME
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        dest = dup_dir / f"{src.stem}_{stamp}{src.suffix}"
+        try:
+            dup_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dest))
+            moved = f"archived/{DUPLICATES_DIRNAME}/{dest.name}"
+        except OSError as e:
+            moved = f"остался на месте ({type(e).__name__})"
+        logger.info(
+            "[DUPLICATE_SKIP] %s: тот же sha256 %s, что у %s/%s -- в staging не поставлен, в индекс не идёт; файл: %s",
+            src.name, digest[:12], where, twin.name, moved,
+        )
+
+    def move_to_staging(self, src_path: Path | str) -> Optional[str]:
         """Перемещает src_path в staging_dir, хеширует, регистрирует с UUID.
+
+        B27: байт-в-байт дубль архивированного / ждущего в staging файла -> None (пропуск без задачи и без
+        ошибки, файл -> archived/duplicates), см. known_copy.
 
         Возвращает UUID задачи при успехе. Если repo.add_task() падает
         (sqlite3.Error — БД занята, диск полон, схема повреждена и т.п.),
@@ -101,6 +166,10 @@ class StagingManager:
         """
         validated_src = guard_path(src_path, allowed_root=self.input_dir)
         content_hash = hashlib.sha256(validated_src.read_bytes()).hexdigest()
+        twin = self.known_copy(validated_src, content_hash)
+        if twin is not None:
+            self._skip_duplicate(validated_src, content_hash, twin)
+            return None
         dest_path = self.staging_dir / validated_src.name
 
         validated_src.rename(dest_path)

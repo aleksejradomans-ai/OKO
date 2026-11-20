@@ -81,6 +81,17 @@ PROBE_PAUSE_S = 0.25                       # пауза между контро�
 INTENT_PROPOSAL = {"theta_intent": 0.75, "theta_margin": 0.5, "theta_goal": 0.5}
 INTENT_CLASSES = {"rule": (1.0, 0.0, 2), "model": (0.7, 0.3, 2)}
 C_GOAL = {"verified": 1.0, "blind": 0.5}
+# B27 (T4): сбой внутреннего пути шлюза -- не молчаливый pass, а явный исход HALT с кодом причины. Коды -- только здесь.
+# В журнал службы и в счётчик (metric["faults"], metric[<код>]) идут код и класс исключения (или метка ядра), без
+# текста исключения и без ввода пользователя. OKO_SIGMA_LIVE=0: вердикт HALT только пишется (команда
+# идёт по-старому); OKO_SIGMA_LIVE=1: команда не отправляется.
+FAULT_SCALES = "SIGMA_SCALES_ERROR"          # шкалы признаков (kappa_j / eps_norm) из params не прочитаны
+FAULT_PI0 = "SIGMA_PI0_ERROR"                # π_0 признака из params не прочитан (вера считалась бы по равномерному)
+FAULT_EVENT = "SIGMA_EVENT_REJECTED"         # отложенное событие отвергнуто интегратором (шаг не учтён)
+FAULT_COUNT = "SIGMA_COUNT_ERROR"            # счётчики n / m по исходу команды не обновлены -> HALT следующего решения
+FAULT_PROBE = "SIGMA_PROBE_EVENT_ERROR"      # событие readback Active Probing не учтено -> пробинг остановлен
+FAULT_CODES = (FAULT_SCALES, FAULT_PI0, FAULT_EVENT, FAULT_COUNT, FAULT_PROBE)
+CARRY_MAX = 8                                # сбоев after(), переносимых на следующее решение (потолок)
 
 
 def live_enabled() -> bool:
@@ -134,6 +145,12 @@ class Verdict:
         return self.outcome == "EXECUTE"
 
 
+def _fault_tag(e: BaseException) -> str:
+    """Метка ядра (INVALID_TIMESTAMP ...) или имя класса исключения -- без текста исключения."""
+    lab = getattr(e, "label", None)
+    return lab.value if isinstance(lab, AL.Label) else type(e).__name__
+
+
 def _code(reason: Optional[str]) -> Optional[str]:
     if not reason:
         return None
@@ -161,8 +178,10 @@ class Gate:
         self.obs: dict = {}                 # obs[feature] = [value, ts]
         self.feat_of: dict = {}             # action -> feature (по исходам)
         self.metric: dict = {"sent": 0, "verified": 0, "fail": 0, "events": 0, "probe_ok": 0, "probe_fail": 0,
-                             "probe_runs": 0, "writes_blocked": 0}
+                             "probe_runs": 0, "writes_blocked": 0, "faults": 0}
         self.probe_ok_run = 0
+        self._faults: list = []             # B27: сбои текущего вызова ("<код>:<метка|класс>")
+        self.carry: list = []               # B27: сбои after() -> HALT следующего решения (один раз)
         self._load_params()
         self._load_state()
 
@@ -200,6 +219,9 @@ class Gate:
                 self.metric.update({k: v for k, v in st["metric"].items() if _is_int(v)})
             if _is_int(st.get("probe_ok_run")):
                 self.probe_ok_run = st["probe_ok_run"]
+            carry = st.get("carry")
+            if isinstance(carry, list):
+                self.carry = [c for c in carry if isinstance(c, str) and c.split(":", 1)[0] in FAULT_CODES][:CARRY_MAX]
             pend = st.get("pending")
             if isinstance(pend, list):
                 self.pending = [p for p in pend if isinstance(p, list) and len(p) == 3]
@@ -219,7 +241,8 @@ class Gate:
             st = {"schema": STATE_SCHEMA, "last_seq": self.last_seq, "pending": self.pending,
                   "integrator": self.integ.to_state() if self.integ is not None and self.state_error is None else None,
                   "state_error": self.state_error, "live": live_enabled(), "n": self.n, "m": self.m,
-                  "obs": self.obs, "feat_of": self.feat_of, "metric": self.metric, "probe_ok_run": self.probe_ok_run}
+                  "obs": self.obs, "feat_of": self.feat_of, "metric": self.metric, "probe_ok_run": self.probe_ok_run,
+                  "carry": self.carry}
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.state_path.with_name(self.state_path.name + ".tmp")
             tmp.write_text(json.dumps(st, ensure_ascii=False, separators=(",", ":"), sort_keys=True), encoding="utf-8")
@@ -233,6 +256,14 @@ class Gate:
                     time.sleep(0.05)
         except Exception as e:  # noqa: BLE001
             logger.warning("[SIGMA_GATE] состояние не записано: %s", type(e).__name__)
+
+    def _fault(self, code: str, e: BaseException) -> None:
+        """B27 (T4): сбой пути шлюза -> код в текущем вызове, счётчик, строка журнала (код + класс, без текста)."""
+        tag = _fault_tag(e)
+        self._faults.append(code + ":" + tag)
+        self.metric["faults"] = int(self.metric.get("faults", 0)) + 1
+        self.metric[code] = int(self.metric.get(code, 0)) + 1
+        logger.warning("[SIGMA_GATE] HALT code=%s (%s)", code, tag)
 
     # ------------------------------------------------------------------ seq (п.5)
     def next_seq(self) -> int:
@@ -254,22 +285,27 @@ class Gate:
         try:
             kap = self.doc["params"]["kappa_j"]["value"]
             eps = self.doc["eps_norm"]["per_feature"]
+            if kap is None or eps is None:            # NO_DATA в params: шкал нет -> C_state NO_DATA -> HALT (не сбой)
+                return out
             for f, k in kap.items():
                 if _is_num(k) and k > 0 and _is_num(eps.get(f)) and f not in ISOLATED:
                     out[f] = (0.0, float(k), float(eps[f]))
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001 -- B27: HALT SIGMA_SCALES_ERROR
+            self._fault(FAULT_SCALES, e)
         return out
 
     def _pi0(self, f: str, states: tuple) -> tuple:
         try:
-            v = self.doc["params"]["pi_0"]["value"][f]
+            node = self.doc["params"]["pi_0"]
+            if node.get("value") is None:             # NO_DATA (n = 0, синтетический дефолт): равномерный π_0 -- штатно
+                return tuple(1.0 for _ in states)
+            v = node["value"][f]
             seen, unseen = v.get("seen", {}), v.get("unseen")
             p = tuple(float(seen.get(str(int(s)), unseen)) for s in states)
             if all(_is_num(x) and x > 0 for x in p):
                 return p
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001 -- B27: HALT SIGMA_PI0_ERROR (вера по равномерному не исполняется)
+            self._fault(FAULT_PI0, e)
         return tuple(1.0 for _ in states)
 
     def _budget(self) -> AL.Budget:
@@ -328,8 +364,8 @@ class Gate:
         for eid, ts, dl in pend[:-1]:
             try:
                 self.integ.step(int(eid), float(ts), [float(dl)])
-            except Exception:  # noqa: BLE001 -- INVALID_TIMESTAMP: событие отвергнуто, состояние прежнее
-                pass
+            except Exception as e:  # noqa: BLE001 -- INVALID_TIMESTAMP: событие отвергнуто, состояние прежнее;
+                self._fault(FAULT_EVENT, e)   # B27: HALT SIGMA_EVENT_REJECTED (не молча)
         if pend:
             eid, ts, dl = pend[-1]
             return AL.guarded_decide_event(params, self.integ, int(eid), float(ts), [float(dl)], build)
@@ -341,6 +377,7 @@ class Gate:
         now = time.time() if now is None else now
         live = live_enabled()
         with self.lock:
+            self._faults, self.carry = list(self.carry), []        # B27: сбои прошлого after() -> HALT этого решения
             feature = self.feat_of.get(action) if action else None
             mode, v = ("STEP", d_cmd) if d_cmd is not None else (("SET", v_set) if v_set is not None else (None, None))
             memo: dict = {}
@@ -366,6 +403,8 @@ class Gate:
             except Exception as e:  # noqa: BLE001
                 dec = prop = AL.Decision(AL.Outcome.HALT, ("KERNEL_ERROR:" + type(e).__name__,))
                 cs = None
+            if self._faults:                                      # B27 (T4): сбой пути шлюза -> HALT с его кодом
+                dec = prop = AL.Decision(AL.Outcome.HALT, (self._faults[0],))
             alarm = True if (self.integ is None or self.state_error) else bool(self.integ.alarm)
             self.save()
             return Verdict(outcome=dec.outcome.value, why=_code(dec.reasons[0] if dec.reasons else None),
@@ -379,6 +418,7 @@ class Gate:
         expected -- s_exp строки outcome (цель записи), observed -- s_obs (чтение после записи)."""
         now = time.time() if now is None else now
         with self.lock:
+            self._faults = []
             try:
                 if feature and action:
                     self.feat_of[action] = feature
@@ -405,6 +445,8 @@ class Gate:
                 self.metric["events"] += 1
                 return delta
             finally:
+                if self._faults:                                  # B27: HALT следующего решения (один раз)
+                    self.carry = (self.carry + self._faults)[:CARRY_MAX]
                 self.save()
 
     def _count(self, feature, expected, observed, d_cmd, now) -> None:
@@ -434,8 +476,8 @@ class Gate:
                     row[_k(observed)] = row.get(_k(observed), 0) + 1
                     mm = self.m.setdefault(feature, {})
                     mm[_k(r.residual)] = mm.get(_k(r.residual), 0) + 1
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as e:  # noqa: BLE001 -- B27: HALT SIGMA_COUNT_ERROR (следующее решение)
+                    self._fault(FAULT_COUNT, e)
         self.obs[feature] = [observed, now]
 
     # ------------------------------------------------------------------ Active Probing (боевой режим, п.3)
@@ -444,10 +486,15 @@ class Gate:
         """Только чтение признака (get_*), не больше R_t чтений. Удачное (d_∞ ≤ ε_norm к последнему наблюдению) ->
         событие δ = 0; расхождение / сбой чтения -> δ = 1, счёт удачных подряд сбрасывается. Каждое чтение --
         отдельное событие seq. Остановка: тревога снята (D < Θ_reset) или бюджет исчерпан."""
-        res = {"reads": 0, "ok": 0, "fail": 0, "cleared": False, "reason": None}
+        res = {"reads": 0, "ok": 0, "fail": 0, "cleared": False, "reason": None, "halt": None}
         with self.lock:
+            self._faults = []
             self.metric["probe_runs"] += 1
             sc = self.scales()
+            if self._faults:                                      # B27: шкалы не прочитаны -> HALT, чтений нет
+                res["reason"], res["halt"] = "HALT", _code(self._faults[0])
+                self.save()
+                return res
             f = feature if feature in sc else next((x for x in sorted(self.obs) if x in sc), None)
             if f is None or self.integ is None or self.params is None or self.state_error:
                 res["reason"] = "PROBE_NO_REF"
@@ -486,8 +533,8 @@ class Gate:
                 try:
                     self.pending.append([next_seq(), now, delta])
                     self._decide(self.params, _probe_inputs)    # событие readback -> guarded_decide_event
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as e:  # noqa: BLE001 -- B27: HALT SIGMA_PROBE_EVENT_ERROR, пробинг остановлен
+                    self._fault(FAULT_PROBE, e)
                 if ok:
                     res["ok"] += 1
                     self.probe_ok_run += 1
@@ -498,6 +545,9 @@ class Gate:
                     self.metric["probe_fail"] += 1
                 if _is_num(val) and lo <= val <= hi:
                     self.obs[f] = [val, now]             # карта синхронизирована с прочитанным
+                if self._faults:                         # B27 (T4): событие не учтено -> HALT, дальше не читаем
+                    res["reason"], res["halt"] = "HALT", _code(self._faults[0])
+                    break
                 if self.integ.alarm and pause > 0:
                     time.sleep(pause)
             res["cleared"] = not self.integ.alarm

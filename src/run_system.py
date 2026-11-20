@@ -91,7 +91,10 @@ class KnowledgeHandler(FileSystemEventHandler):
 
         try:
             task_uuid = self.staging_manager.move_to_staging(path)
-            logger.info("Staged for approval: %s -> uuid=%s", path, task_uuid)
+            if task_uuid is None:                # B27: байт-в-байт дубль -- пропуск без задачи и без ошибки
+                logger.info("Duplicate skipped (not staged): %s", os.path.basename(path))
+            else:
+                logger.info("Staged for approval: %s -> uuid=%s", path, task_uuid)
         except Exception as e:
             logger.error("Failed to move %s to staging: %s", path, e)
 
