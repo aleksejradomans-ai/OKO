@@ -109,18 +109,18 @@ def test_memory_commands_do_not_touch_tv(store):
 
 
 def test_keys_exist_in_tv_control():
-    tv_control = pytest.importorskip("tv_control")
+    import tv_control   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     assert set(N.NAV_WORDS.values()) <= set(tv_control.KEYS)
 
 
 def test_nav_error_is_handler_unknown():
     """tv_bot_handler ловит tv_commands.Unknown — иначе ошибка навигации уронила бы обработчик."""
-    tv_commands = pytest.importorskip("tv_commands")
+    import tv_commands   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     assert issubclass(N.NavError, tv_commands.Unknown)
 
 
 def test_handler_routes_navigation_first(store, monkeypatch):
-    H = pytest.importorskip("tv_bot_handler")
+    import tv_bot_handler as H   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     monkeypatch.setattr(N, "MacroStore", lambda path=None: store)
     tv = FakeTV()
     out = H.handle(1, "вниз три", lambda: tv, admin_ids=[1], pending=H.PendingStore())
@@ -152,7 +152,7 @@ def test_latin_sequence_and_macro_names_match_cyrillic(store):
 
 
 def test_handler_understands_latin(store, monkeypatch):
-    H = pytest.importorskip("tv_bot_handler")
+    import tv_bot_handler as H   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     if "tv_nav.canonical(" not in open(H.__file__, encoding="utf-8-sig").read():
         pytest.fail("tv_bot_handler не приводит ввод через tv_nav.canonical")
     monkeypatch.setattr(N, "MacroStore", lambda path=None: store)
@@ -163,10 +163,10 @@ def test_handler_understands_latin(store, monkeypatch):
 
 def test_handler_single_latin_key_reaches_tv_commands(store, monkeypatch):
     """«ok» одиночной кнопкой разбирает tv_commands — нужен настоящий словарь (на машине Оператора)."""
-    tv_commands = pytest.importorskip("tv_commands")
+    import tv_commands   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     if not getattr(tv_commands, "KEY_WORDS", None):
         pytest.skip("заглушка tv_commands (песочница)")
-    H = pytest.importorskip("tv_bot_handler")
+    import tv_bot_handler as H   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     monkeypatch.setattr(N, "MacroStore", lambda path=None: store)
     tv = FakeTV()
     out = H.handle(1, "ok", lambda: tv, admin_ids=[1], pending=H.PendingStore())

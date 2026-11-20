@@ -1,7 +1,7 @@
 """tv_bot_handler: запасной путь через смысл (tv_intent) и честный текст «разные сети» (30.10.2026)."""
 import pytest
 
-H = pytest.importorskip("tv_bot_handler")
+import tv_bot_handler as H   # обычный import: сломанный модуль ядра = красный тест, не пропуск
 import tv_intent
 from tv_control import TVTransportError
 
@@ -115,7 +115,7 @@ def test_refusal_not_sent_to_model(monkeypatch, text):
 
 
 def test_nav_refusal_not_sent_to_model(monkeypatch):
-    nav = pytest.importorskip("tv_nav")
+    import tv_nav as nav   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     if not hasattr(nav, "NavError"):
         pytest.skip("заглушка tv_nav")
     called = []

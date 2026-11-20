@@ -333,7 +333,8 @@ def test_hung_request_in_flight_counts_as_failure(gc):
 
 @pytest.fixture
 def bot_mod():
-    return pytest.importorskip("bot")
+    import bot   # обычный import: сломанный модуль ядра = красный тест, не пропуск
+    return bot
 
 
 def test_transport_note_shows_seconds(bot_mod):

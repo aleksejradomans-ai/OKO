@@ -85,8 +85,8 @@ def _sample(action):
 @pytest.mark.parametrize("action", sorted(I.CATALOG))
 def test_every_catalog_phrase_is_understood_by_rules(action):
     """Канон каждого действия обязан разбираться обычными правилами — иначе модель «поймёт», а бот не выполнит."""
-    tv_commands = pytest.importorskip("tv_commands")
-    tv_nav = pytest.importorskip("tv_nav")
+    import tv_commands   # обычный import: сломанный модуль ядра = красный тест, не пропуск
+    import tv_nav   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     phrase = I.to_phrase(_sample(action))
     cmd = tv_nav.parse(tv_nav.canonical(phrase)) or tv_commands.parse(tv_nav.canonical(phrase))
     assert cmd is not None

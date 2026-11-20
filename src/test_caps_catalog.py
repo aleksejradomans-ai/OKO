@@ -100,10 +100,16 @@ def test_reflect_stays_cold():
     assert _sys(gov) is None
 
 
+async def _judge_pass(response, num_ctx=None):
+    """Судья /discuss подменён вердиктом PASS: эти тесты не про судью (он покрыт в test_discuss_judge.py)."""
+    return response
+
+
 def test_discuss_identity_only():
     gov = _gov()
     gov.set_capabilities(CAPS)
     gov._call_llm_with_timeout = AsyncMock(return_value="answer")
+    gov._judge_block_only = _judge_pass
     asyncio.run(gov.execute_discuss_request("question", "document"))
     assert _sys(gov) == IDENTITY
 

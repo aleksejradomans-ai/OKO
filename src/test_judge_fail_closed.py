@@ -188,7 +188,7 @@ class TestUnchangedPaths:
 class TestBotExplainsNewCodes:
     @pytest.mark.parametrize("code", ["JUDGE_UNPARSEABLE", "COMPLIANCE_UNRESOLVED"])
     def test_bot_has_human_explanation(self, code):
-        bot = pytest.importorskip("bot")
+        import bot   # обычный import: сломанный модуль ядра = красный тест, не пропуск
         marker = f"[ERR: {code}]"
         explained = bot._explain_error(marker)
         assert explained.startswith(marker) and len(explained) > len(marker) + 10

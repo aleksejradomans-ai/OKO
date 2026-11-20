@@ -76,6 +76,9 @@ class StepTV:
     def set_ambilight_style(self, style, setting=None):
         return self._rec("set_ambilight_style", (style, setting), None)
 
+    def get_ambilight_config(self):          # B20: яркость идёт по режиму; двойник -- «за картинкой» (ползунок 710)
+        return self._rec("get_ambilight_config", (), {"styleName": "FOLLOW_VIDEO", "menuSetting": "STANDARD"})
+
     def set_lounge_color(self, hue, sat, bri):
         return self._rec("set_lounge_color", (hue, sat, bri), None)
 

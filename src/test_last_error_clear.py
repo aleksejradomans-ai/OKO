@@ -76,8 +76,14 @@ def test_transport_failure_then_recovery():
     assert g.registry.state["last_error"] is None
 
 
+async def _judge_pass(response, num_ctx=None):
+    """Судья /discuss подменён вердиктом PASS: эти тесты не про судью (он покрыт в test_discuss_judge.py)."""
+    return response
+
+
 def test_discuss_success_clears_transport_error():
     g = _gov("DISCUSS_TIMEOUT: LLM call exceeded timeout", answer="doc answer")
     g._observe_metrics = lambda *a, **k: None
+    g._judge_block_only = _judge_pass
     assert asyncio.run(g.execute_discuss_request("q", "doc")) == "doc answer"
     assert g.registry.state["last_error"] is None

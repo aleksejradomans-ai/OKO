@@ -230,7 +230,7 @@ def test_tv_commands_screen_off_not_standby():
 
 
 def test_execute_local_does_not_touch_tv_factory():
-    H = pytest.importorskip("tv_bot_handler")
+    import tv_bot_handler as H   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     cmd = MS.parse("экран", data=DATA, menu_map=MAP)
     assert cmd is not None and cmd.kind == MS.LOCAL_KIND
 
@@ -272,18 +272,18 @@ def test_screen_on_not_captured_by_menu_clarify():
 # --- 06.11 Claude: роутер без /tv и калибровка камеры по карте ---
 @pytest.mark.parametrize(("phrase", "name"), [("выключи экран", "screen_off"), ("включи экран", "screen_on")])
 def test_router_allows_screen_commands_without_tv_mode(phrase, name):
-    R = pytest.importorskip("router")
+    R = pytest.importorskip("router")   # исключение: router вне публичного списка export_public; пропуск в CI ловит known_skips
     r = R.route(phrase, phrase, None, None)
     assert r.kind == R.TV and r.reason == f"tv_rule:{name}"
 
 
 def test_router_translit_ekran():
-    R = pytest.importorskip("router")
+    R = pytest.importorskip("router")   # исключение: router вне публичного списка export_public; пропуск в CI ловит known_skips
     assert R._translit("vikljuci ekran") == "выключи экран"
 
 
 def test_calibrate_auto_refuses_without_map_route(monkeypatch):
-    cw = pytest.importorskip("camera_watcher")
+    import camera_watcher as cw   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     monkeypatch.setattr(cw, "enabled", lambda: True)
 
     def bad_route(*a, **kw):

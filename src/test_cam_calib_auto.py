@@ -60,7 +60,7 @@ def test_path_matches_map():
 
 
 def test_keys_are_known_to_tv_control():
-    tv_control = pytest.importorskip("tv_control")
+    import tv_control   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     assert set(cw.SCREEN_OFF_KEYS) | {cw.RESTORE_KEY} <= tv_control.KEYS
 
 
@@ -130,7 +130,7 @@ class _Cmd:
 
 
 def test_pre_runs_before_command_and_note_is_appended(monkeypatch):
-    tbh = pytest.importorskip("tv_bot_handler")
+    import tv_bot_handler as tbh   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     log = []
     monkeypatch.setattr(tbh, "PRE", {"power_on": lambda: log.append("pre") or "⚙️ углы пересчитаны"})
     monkeypatch.setattr(tbh, "VERIFY", {})
@@ -140,7 +140,7 @@ def test_pre_runs_before_command_and_note_is_appended(monkeypatch):
 
 
 def test_pre_failure_does_not_block_command(monkeypatch):
-    tbh = pytest.importorskip("tv_bot_handler")
+    import tv_bot_handler as tbh   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     log = []
 
     def bad():
@@ -152,5 +152,5 @@ def test_pre_failure_does_not_block_command(monkeypatch):
 
 
 def test_pre_empty_by_default():
-    tbh = pytest.importorskip("tv_bot_handler")
+    import tv_bot_handler as tbh   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     assert "power_on" not in tbh.PRE or callable(tbh.PRE["power_on"])

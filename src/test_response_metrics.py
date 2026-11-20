@@ -195,8 +195,14 @@ def _discuss_gov(answer=None, exc=None):
     return g
 
 
+async def _judge_pass(response, num_ctx=None):
+    """Судья /discuss подменён вердиктом PASS: эти тесты не про судью (он покрыт в test_discuss_judge.py)."""
+    return response
+
+
 def test_discuss_answer_is_measured_point_d():
     g = _discuss_gov(answer="В документе сказано: порог 0.48.")
+    g._judge_block_only = _judge_pass
     with _Cap() as cap:
         out = asyncio.run(g.execute_discuss_request("что сказано?", "текст документа", 111))
     assert out == "В документе сказано: порог 0.48."

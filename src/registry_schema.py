@@ -40,6 +40,11 @@ class ComplianceStatusEnum(str, Enum):
     UNCHECKED_AFTER_CORRECTION = "UNCHECKED_AFTER_CORRECTION"
 
 
+class JudgeStateEnum(str, Enum):
+    OK = "OK"
+    JUDGE_DEGRADED = "JUDGE_DEGRADED"   # судья сбоит N раз подряд (не транспорт) -- ответы блокируются
+
+
 class AlertStateEnum(str, Enum):
     NORMAL = "NORMAL"
     ALARM = "ALARM"
@@ -97,6 +102,15 @@ STATE_SCHEMA: dict[str, Any] = {
     "transport_failures": (int,),
     "stagnation_breaks": (int,),
     "last_stagnation_reason": (str, type(None)),
+    "judge_fail_streak": (int,),
+    "judge_state": JudgeStateEnum,
+    "judge_fail_reason": (str, type(None)),
+    "judge_multi_checks": (int,),
+    "judge_multi_block_first": (int,),
+    "judge_multi_block_middle": (int,),
+    "judge_multi_block_last": (int,),
+    "judge_multi_too_long": (int,),
+    "last_judge_block": (str, type(None)),
 }
 
 

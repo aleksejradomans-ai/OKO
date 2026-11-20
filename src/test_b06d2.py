@@ -230,7 +230,7 @@ def test_d2_spoof_plain_never_host(t):
 
 
 # ---- bot: проводка и сторожа в Host-Only ---------------------------------------------------------------------------
-bot = pytest.importorskip("bot")
+import bot   # обычный import: сломанный модуль ядра = красный тест, не пропуск
 import config  # noqa: E402
 
 

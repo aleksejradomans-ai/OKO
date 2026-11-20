@@ -4,6 +4,7 @@ bot.py — интерфейсный I/O-слой системы.
 первичную фильтрацию ввода и передачу запроса в изолированное ядро AgentGovernor.
 """
 
+import hashlib
 import re
 import logging
 import sqlite3
@@ -500,6 +501,20 @@ def _with_p1_note(response: str, persisted) -> str:
     return f"{P1_NOTE}\n{response}" if persisted is False else response
 
 
+def _sha16(text) -> str:
+    """Отпечаток текста для логов (первые 16 hex sha256): текст ответа в рабочий лог не пишется."""
+    return hashlib.sha256(str(text or "").encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _log_text(text) -> str:
+    """Текст для рабочего лога: длина и sha16; сам текст -- только при флаге диагностики OKO_DIAG_LOG_TEXT=1
+    (с пометкой флага в строке)."""
+    s = str(text or "").strip()
+    if config.DIAG_LOG_TEXT:
+        return f"[OKO_DIAG_LOG_TEXT=1] {s[:40]!r}"
+    return f"len={len(s)} sha16={_sha16(s)}"
+
+
 def _is_error_marker(response) -> bool:
     """Ответ ядра — служебный маркер сбоя ([ERR: LLM_UNAVAILABLE],
     [ERR: SYSTEM_DEGRADED], ...), а не реплика ассистента. Такие маркеры
@@ -519,8 +534,12 @@ _ERR_TEXT = {
     # JUDGE_FAIL_CLOSED
     "JUDGE_UNPARSEABLE": "Проверка не дала понятного вердикта, поэтому ответ не показан. "
                          "Попробуйте переформулировать запрос.",
-    "COMPLIANCE_UNRESOLVED": "Ответ нарушал правила и не исправился после попытки коррекции, "
-                             "поэтому не показан.",
+    "COMPLIANCE_UNRESOLVED": "Ответ нарушал правила и не был исправлен (коррекция не помогла; "
+                             "в режиме /discuss она не применяется), поэтому не показан.",
+    "JUDGE_ERROR": "Проверка ответа не состоялась: проверяющий дал сбой, повтор не помог. "
+                   "Непроверенный ответ не показан. Повторите запрос.",
+    "JUDGE_TOO_LONG": "Ответ получился слишком длинным для проверки, даже по частям, поэтому не показан "
+                      "(обрезанным он не отдаётся). Попросите ответ короче или разбейте вопрос на части.",
 }
 
 
@@ -562,9 +581,19 @@ def _explain_for_user(governor, response) -> str:
     LLM_UNAVAILABLE ("короткий запрос или повтор через минуту") неверно --
     длина запроса ни на что не влияет. Тогда только маркер + _transport_note."""
     note = _transport_note(governor, response)
-    if note:
-        return response.strip() + note
-    return _explain_error(response)
+    out = response.strip() + note if note else _explain_error(response)
+    judge = _judge_note(governor)
+    return f"{out}\n{judge}" if judge and isinstance(out, str) else out
+
+
+def _judge_note(governor) -> str:
+    """Одноразовое сообщение о судье («сбоит N раз подряд — ответы блокируются» / «снова работает»):
+    отдельной строкой в конце ближайшего ответа. Нет метода / не строка -> пусто."""
+    try:
+        note = governor.pop_judge_notice()
+    except Exception:  # noqa: BLE001
+        return ""
+    return note if isinstance(note, str) else ""
 
 
 def _with_notice(response: str, incidents) -> str:
@@ -703,7 +732,7 @@ async def process_logic(
         # пишем (ни запрос, ни маркер): пара без настоящего ответа только
         # зашумила бы контекст следующих запросов.
         logger.warning("[HISTORY_SKIPPED] Core returned %s for user=%s — exchange not persisted",
-                       raw_response.strip()[:40], user_id)
+                       _log_text(raw_response), user_id)
     else:
         raw_response, fix = role_guard.normalize_answer(raw_response)   # R2a хвост (11.11): P1 кодом, срез советов
         if fix:
@@ -825,7 +854,7 @@ async def process_discuss_logic(
     persisted = None
     if _is_error_marker(raw_response):
         logger.warning("[HISTORY_SKIPPED] Discuss core returned %s for user=%s — exchange not persisted",
-                       raw_response.strip()[:40], user_id)
+                       _log_text(raw_response), user_id)
     else:
         persisted = await asyncio.to_thread(
             _save_exchange, user_id, f"[/discuss:{filename}] {sanitized_input}", raw_response
@@ -1286,7 +1315,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     clean_response = layout_note + core.clean_output(_explain_for_user(governor, raw_response))
     final_response = core.format_final(clean_response[:MAX_MSG_LEN - len(core.name) - 4])
-    logger.info(f"Response routed to {user_id}: {final_response[:50]}")
+    logger.info("Response routed to %s: len=%d sha16=%s", user_id, len(final_response), _sha16(final_response))
 
     await _reply_with_retry(update.message, final_response, user_id)
 

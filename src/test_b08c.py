@@ -416,6 +416,8 @@ class WireTV(TVClient):
             return {"values": [{"value": {"Nodeid": n["nodeid"], "Controllable": True, "Available": True,
                                           "data": dict(self.state[n["nodeid"]])}} for n in payload["nodes"]
                                if n["nodeid"] in self.state]}
+        if path == "ambilight/currentconfiguration" and method == "GET":   # B20: режим «за картинкой» -> ползунок 710
+            return {"styleName": "FOLLOW_VIDEO", "menuSetting": "STANDARD"}
         if path == "menuitems/settings/update":
             v = payload["values"][0]["value"]
             if self.accept:
@@ -482,7 +484,7 @@ def test_b08c_JOURNAL_d_cmd_signed_from_command(monkeypatch, jw):
 def test_b08c_JOURNAL_s_raw_before_normalization(monkeypatch, jw):
     """Сырое значение ТВ 9,6 (до int() клиента): s_obs 9, s_raw 9,6 в строке readback до записи; «12» строкой -- вне шкалы."""
     _play(monkeypatch, "1", ["подсветка ярче"], make=lambda: WireTV(start=9.6))
-    rb = [r for r in _rows(jw) if r["step"] == "readback"]
+    rb = [r for r in _rows(jw) if r["step"] == "readback" and r.get("feature") == "setting_710"]   # B20: до него -- чтение режима
     assert rb[0]["s_obs"] == 9 and rb[0]["s_raw"] == 9.6
     (o,) = _outs(jw)
     assert o["s_raw"] == o["s_obs"] == 10 and o["d_cmd"] == 1
@@ -503,7 +505,7 @@ def test_b08c_JOURNAL_rows_feed_residual_model(monkeypatch, jw):
     r1 = al.transition_residual(CmdMode.SET, o1["s_raw"], LO, HI, v_cmd=o1["s_exp"])
     assert r1.residual == 0.0
     # второй ТВ-клиент стартует с 4 (двойник), поэтому x' берём из строки readback до записи той же команды
-    rb2 = [r for r in _rows(jw) if r["step"] == "readback" and r["seq"] == o2["seq"]][0]
+    rb2 = [r for r in _rows(jw) if r["step"] == "readback" and r["seq"] == o2["seq"] and r.get("feature") == "setting_710"][0]
     r2 = al.transition_residual(CmdMode.STEP, o2["s_raw"], LO, HI, x_prev=rb2["s_raw"], d_cmd=o2["d_cmd"])
     assert (r2.target, r2.residual) == (7.0, 0.0)
 

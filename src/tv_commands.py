@@ -32,6 +32,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import Any, Callable
 
 import amb_music   # AMB_MUSIC (04.11): разбор «под музыку <цвет>/переход» и пульт моста; без сети при импорте
@@ -379,10 +380,10 @@ def parse(text: str) -> Command:
             return Command(kind=VERIFIED, name="amb_sat_down", run=lambda tv: _amb_level(tv, SATURATION, -1))
         if re.search(r"(ярче|поярче)", t):
             return Command(kind=VERIFIED, name="amb_brighter", meta={"step": abs(n or 1)},
-                           run=lambda tv: _amb_level(tv, BRIGHTNESS, +abs(n or 1)))
+                           run=lambda tv: _amb_bri(tv, +abs(n or 1)))
         if re.search(r"(тусклее|темнее|потемнее|слабее|приглуши)", t):
             return Command(kind=VERIFIED, name="amb_dimmer", meta={"step": abs(n or 1)},
-                           run=lambda tv: _amb_level(tv, BRIGHTNESS, -abs(n or 1)))
+                           run=lambda tv: _amb_bri(tv, -abs(n or 1)))
         if re.search(r"(?<![a-zа-я])(авто|автоматически|умная|ии|ai)(?![a-zа-я])", t):
             return Command(kind=VERIFIED, name="amb_ai", run=_amb_ai)
         # 30.10 13:37 (Оператор): «плюс 2 / минус 3» — ИЗМЕНЕНИЕ, а не значение. Раньше «плюс пять» ставило 5.
@@ -390,26 +391,27 @@ def parse(text: str) -> Command:
             spec = SATURATION if re.search(r"насыщенн", t) else BRIGHTNESS
             delta = sign * abs(n)
             return Command(kind=VERIFIED, name="amb_sat_step" if spec is SATURATION else "amb_step",
-                           meta={"delta": delta}, run=lambda tv: _amb_level(tv, spec, delta))
+                           meta={"delta": delta},
+                           run=lambda tv: _amb_level(tv, spec, delta) if spec is SATURATION else _amb_bri(tv, delta))
         if n is not None and re.search(r"насыщенност", t):
             return Command(kind=VERIFIED, name="amb_sat_set", meta={"level": n},
                            run=lambda tv: _amb_level(tv, SATURATION, None, n))
         if n is None and (_MAX.search(t) or _MIN.search(t)):
             lvl = BRIGHTNESS[3] if _MAX.search(t) else BRIGHTNESS[2]
             return Command(kind=VERIFIED, name="amb_brightness_set", meta={"level": lvl},
-                           run=lambda tv: _amb_level(tv, BRIGHTNESS, None, lvl))
+                           run=lambda tv: _amb_bri(tv, None, lvl))
         if n is None and re.search(r"яркост", t) and _direction(t):
             step = _direction(t)
             return Command(kind=VERIFIED, name="amb_step", meta={"delta": step},
-                           run=lambda tv: _amb_level(tv, BRIGHTNESS, step))
+                           run=lambda tv: _amb_bri(tv, step))
         if n is None and re.search(r"яркост", t):
             return Command(kind=VERIFIED, name="amb_brightness_get",
-                           run=lambda tv: f"Подсветка: яркость {tv.get_setting_value(BRIGHTNESS[1])} из {BRIGHTNESS[3]}")
+                           run=_amb_bri_get)
         # «подсветка 7» и «подсветка десять» (число словами — 30.10 уходило в модель)
         # 03.11: «подсветка на 6» (живой случай 01:2x -- уходило в модель смысла)
         if n is not None and (re.search(r"ярк", t) or re.fullmatch(r"\S+\s+(на\s+)?-?\d+", t) or len(t.split()) == 2):
             return Command(kind=VERIFIED, name="amb_brightness_set", meta={"level": n},
-                           run=lambda tv: _amb_level(tv, BRIGHTNESS, None, n))
+                           run=lambda tv: _amb_bri(tv, None, n))
         if re.search(r"(включ\w*|он|on)", t):
             return Command(
                 kind=VERIFIED, name="amb_on", run=_amb_on,
@@ -708,6 +710,100 @@ def _amb_level(tv: Any, spec: tuple, delta: int | None, absolute: int | None = N
     elif want != got:
         text += f" (просили {want}, предел {lo}…{hi})"
     return text
+
+
+# --- B20 (20.11, Оператор 00:59 [1]): яркость по ТЕКУЩЕМУ режиму подсветки ---------------------------------------------
+# Живой случай 19.11 23:43: после amb_colour (стиль FOLLOW_COLOR, цвет через ambilight/lounge) «яркость N» писала
+# ползунок меню 710 и читала его же (PASS), а лампы не менялись: в режиме цвета видимую яркость задаёт 3-й аргумент
+# set_lounge_color (сверка -- get_lounge_color.brightness, как у AMB_OFF / AMB_ON). Поэтому маршрут -- по стилю,
+# прочитанному с ТВ ПЕРЕД записью:
+#   FOLLOW_COLOR                -> яркость цвета: оттенок и насыщенность читаются и пишутся те же, меняется только
+#                                  brightness (шкала 0..10 речи <-> 0..255 lounge), чтение после записи -- lounge;
+#   FOLLOW_VIDEO / FOLLOW_AUDIO -> как раньше: ползунок меню 710 (_amb_level), его чтение;
+#   иное / нет стиля в ответе   -> отказ «нет данных о режиме»: ничего не отправлено (ValueError -> «📺 Команда не
+#                                  выполнена: …», исход FAIL). Сбой связи / ошибка ТВ при чтении -- обычные ветки.
+# Вне диапазона 0..10 в режиме цвета -- отказ, ничего не отправлено; шаг у края -- «уже предел», как у 710.
+LOUNGE_MAX = 255
+COLOUR_STYLE = "FOLLOW_COLOR"
+SETTING_STYLES = frozenset({"FOLLOW_VIDEO", "FOLLOW_AUDIO"})
+NO_MODE = "нет данных о режиме подсветки — яркость не менял, ничего не отправлено"
+
+
+def _amb_route(tv: Any) -> str | None:
+    """"colour" / "setting" / None -- по styleName текущей конфигурации подсветки (чтение с ТВ)."""
+    c = tv.get_ambilight_config()
+    st = str(c.get("styleName") or "").strip().upper() if isinstance(c, Mapping) else ""
+    if st == COLOUR_STYLE:
+        return "colour"
+    if st in SETTING_STYLES:
+        return "setting"
+    return None
+
+
+def lounge_to_level(raw: int) -> int:
+    """brightness lounge 0..255 -> «яркость N из 10» (тот же смысл, что у ползунка 710)."""
+    return int(int(raw) * BRIGHTNESS[3] / LOUNGE_MAX + 0.5)
+
+
+def level_to_lounge(level: int) -> int:
+    return int(int(level) * LOUNGE_MAX / BRIGHTNESS[3] + 0.5)
+
+
+def _lounge_now(tv: Any) -> dict | None:
+    r = tv.get_lounge_color()
+    c = r.get("color", r) if isinstance(r, Mapping) else None
+    if not isinstance(c, Mapping):
+        return None
+    try:
+        return {k: int(c[k]) for k in ("hue", "saturation", "brightness")}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _amb_bri(tv: Any, delta: int | None, absolute: int | None = None) -> str:
+    route = _amb_route(tv)
+    if route == "setting":
+        return _amb_level(tv, BRIGHTNESS, delta, absolute)
+    if route != "colour":
+        raise ValueError(NO_MODE)
+    label, _node, lo, hi = BRIGHTNESS
+    c = _lounge_now(tv)
+    if c is None:
+        raise ValueError("нет данных о цвете подсветки (оттенок / яркость не прочитаны) — ничего не отправлено")
+    if absolute is not None and not lo <= int(absolute) <= hi:
+        raise ValueError(f"яркость {int(absolute)} вне диапазона {lo}…{hi} (режим один цвет), ничего не отправлено")
+    cur = lounge_to_level(c["brightness"])
+    want = int(absolute) if absolute is not None else cur + int(delta or 0)
+    tgt = max(lo, min(hi, want))
+    head = f"Подсветка: {MODE_PREFIX}{MODE_COLOUR}, {label}"
+    if tgt == cur:
+        return f"{head} {cur} из {hi}" + (" — уже предел" if want != cur else "")
+    raw = level_to_lounge(tgt)
+    tv.set_lounge_color(c["hue"], c["saturation"], raw)
+    _settle()
+    g = _lounge_now(tv)
+    if g is None or g["brightness"] != raw:
+        seen = "нет данных" if g is None else f"яркость цвета {g['brightness']}"
+        return f"Подсветка: запрошено {label} {tgt} из {hi} (яркость цвета {raw}), телевизор сообщает {seen}"
+    if (g["hue"], g["saturation"]) != (c["hue"], c["saturation"]):
+        return (f"Подсветка: запрошено {label} {tgt} из {hi} с тем же цветом (hue {c['hue']}, sat {c['saturation']}), "
+                f"телевизор сообщает hue {g['hue']}, sat {g['saturation']}")
+    text = f"{head} {tgt} из {hi}"
+    if want != tgt:
+        text += f" (просили {want}, предел {lo}…{hi})"
+    return text
+
+
+def _amb_bri_get(tv: Any) -> str:
+    route = _amb_route(tv)
+    if route == "setting":
+        return f"Подсветка: яркость {tv.get_setting_value(BRIGHTNESS[1])} из {BRIGHTNESS[3]}"
+    if route != "colour":
+        raise ValueError("нет данных о режиме подсветки — яркость не прочитана")
+    c = _lounge_now(tv)
+    if c is None:
+        raise ValueError("нет данных о цвете подсветки — яркость не прочитана")
+    return f"Подсветка: {MODE_PREFIX}{MODE_COLOUR}, яркость {lounge_to_level(c['brightness'])} из {BRIGHTNESS[3]}"
 
 
 def _amb_ai(tv: Any) -> str:

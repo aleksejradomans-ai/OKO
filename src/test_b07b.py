@@ -133,6 +133,29 @@ def test_b07b_off_path_passes_raw_client(monkeypatch):
     assert seen == [tv]
 
 
+
+def _no_id_in_rows(rows, ident) -> bool:
+    """Идентификатора нет в журнале: ни в одном значении поля (кроме счётчиков времени ts / seq / latency_ms -- в
+    длинном числе метки времени цифры идентификатора встречаются случайно, 20.11: «…167242420») и нет поля для id."""
+    timing = {"ts", "seq", "latency_ms"}
+    id_keys = {"id", "uid", "user", "user_id", "chat_id", "admin", "admin_id"}
+    for r in rows:
+        if any(k in id_keys or k.endswith("_id") for k in r):
+            return False
+        if any(str(ident) in str(v) for k, v in r.items() if k not in timing):
+            return False
+    return True
+
+
+def test_b07b_id_check_ignores_digits_inside_timestamps():
+    """Регрессия 20.11: ts «…167242420» содержит «4242» -- это не идентификатор; значение поля -- ловится."""
+    ok = [{"ts": 1795167242420, "seq": 4242, "latency_ms": 4242, "step": "send", "s_exp": 7}]
+    assert _no_id_in_rows(ok, ADMIN)
+    assert not _no_id_in_rows([{"ts": 1, "step": "send", "s_exp": ADMIN}], ADMIN)
+    assert not _no_id_in_rows([{"ts": 1, "step": "send", "err": f"user {ADMIN}"}], ADMIN)
+    assert not _no_id_in_rows([{"ts": 1, "step": "send", "user_id": 1}], ADMIN)
+
+
 # --- (2) схема строки ----------------------------------------------------------------------------------------------
 
 def test_b07b_rows_whitelist_only_no_text_no_id(monkeypatch):
@@ -145,7 +168,8 @@ def test_b07b_rows_whitelist_only_no_text_no_id(monkeypatch):
         assert set(r) <= H.SHADOW_FIELDS, set(r) - H.SHADOW_FIELDS
         assert r["step"] in H.SHADOW_STEPS and isinstance(r["ts"], int)
         assert H.shadow_validate(r) == r
-    assert MARK not in raw and "кофе" not in raw and str(ADMIN) not in raw
+    assert MARK not in raw and "кофе" not in raw
+    assert _no_id_in_rows(rows, ADMIN)                              # по значениям полей, не по сырому тексту
     assert "192.0.2" not in raw and "нет сети" not in raw          # адрес ТВ и текст исключения -- нет
     steps = {r["step"] for r in rows}
     assert {"send", "ack", "readback", "outcome", "menu_step", "error"} <= steps

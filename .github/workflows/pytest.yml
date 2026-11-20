@@ -1,5 +1,6 @@
 # CI: the test suite of the public snapshot on a clean Windows runner.
-# Same command as the local "pytest src" run on the exported snapshot; xfail ids must equal .github/known_xfail.txt.
+# Same command as the local "pytest src" run on the exported snapshot; xfail ids must equal .github/known_xfail.txt,
+# skipped tests must equal .github/known_skips.txt (an unexpected or a vanished skip fails the job).
 # No secrets, read-only token, network only for installing packages.
 name: pytest
 
@@ -46,9 +47,19 @@ jobs:
       - name: pytest src
         shell: cmd
         run: |
-          python -m pytest src -q -p no:cacheprovider -rxs > pytest_src.txt 2>&1
+          python -m pytest src -q -p no:cacheprovider -rxs --junitxml=pytest_src.xml > pytest_src.txt 2>&1
           set PYTEST_RC=%ERRORLEVEL%
           type pytest_src.txt
+          exit /b %PYTEST_RC%
+
+      # Tests outside src/ that need no network and no live model (explicit list; testpaths is not changed).
+      - name: pytest root and tools
+        if: always()
+        shell: cmd
+        run: |
+          python -m pytest test_data_hygiene.py tools/test_calibrate_sigma.py tools/test_check_sigma_2e.py -q -p no:cacheprovider -rxs --junitxml=pytest_extra.xml > pytest_extra.txt 2>&1
+          set PYTEST_RC=%ERRORLEVEL%
+          type pytest_extra.txt
           exit /b %PYTEST_RC%
 
       - name: xfail ids = known list
@@ -56,10 +67,33 @@ jobs:
         shell: pwsh
         run: |
           $known = @(Get-Content .github/known_xfail.txt | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim() } | Sort-Object)
-          $got = @(Get-Content pytest_src.txt | Where-Object { $_.StartsWith("XFAIL ") } | ForEach-Object { ($_.Substring(6) -split ' - ', 2)[0].Trim() } | Sort-Object)
+          $got = @(Get-Content pytest_src.txt, pytest_extra.txt | Where-Object { $_.StartsWith("XFAIL ") } | ForEach-Object { ($_.Substring(6) -split ' - ', 2)[0].Trim() } | Sort-Object)
           $unexpected = @($got | Where-Object { $known -notcontains $_ })
           $missing = @($known | Where-Object { $got -notcontains $_ })
           foreach ($x in $unexpected) { Write-Output "UNEXPECTED XFAIL $x" }
           foreach ($x in $missing) { Write-Output "MISSING XFAIL $x" }
           Write-Output "xfail: got $($got.Count), known $($known.Count), unexpected $($unexpected.Count), missing $($missing.Count)"
+          if ($unexpected.Count -or $missing.Count) { exit 1 }
+
+      - name: skipped tests = known list
+        if: always()
+        shell: pwsh
+        run: |
+          $known = @(Get-Content .github/known_skips.txt -Encoding utf8 | Where-Object { $_.Trim() -and -not $_.StartsWith("#") } | ForEach-Object { $_.Trim() } | Sort-Object)
+          $got = @()
+          foreach ($f in @("pytest_src.xml", "pytest_extra.xml")) {
+            if (-not (Test-Path $f)) { Write-Output "MISSING REPORT $f"; exit 1 }
+            $x = New-Object System.Xml.XmlDocument
+            $x.Load((Resolve-Path $f).Path)
+            foreach ($tc in $x.SelectNodes("//testcase[skipped]")) {
+              $sk = $tc.SelectSingleNode("skipped")
+              if ($sk.GetAttribute("type") -eq "pytest.xfail") { continue }
+              $got += "$($tc.GetAttribute('classname'))::$($tc.GetAttribute('name')) | $($sk.GetAttribute('message'))"
+            }
+          }
+          $unexpected = @($got | Where-Object { $known -notcontains $_ })
+          $missing = @($known | Where-Object { $got -notcontains $_ })
+          foreach ($x in $unexpected) { Write-Output "UNEXPECTED SKIP $x" }
+          foreach ($x in $missing) { Write-Output "MISSING SKIP $x" }
+          Write-Output "skipped: got $($got.Count), known $($known.Count), unexpected $($unexpected.Count), missing $($missing.Count)"
           if ($unexpected.Count -or $missing.Count) { exit 1 }

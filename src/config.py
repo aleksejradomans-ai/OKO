@@ -58,6 +58,13 @@ OLLAMA_EMBED_MODEL: str = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 # --- Таймауты и лимиты governor ---
 LLM_TIMEOUT: float = _get_env_float("LLM_TIMEOUT", 30.0)
 JUDGE_TIMEOUT: float = _get_env_float("JUDGE_TIMEOUT", 15.0)
+# Сбоев судьи подряд (не транспорт, после повтора) до состояния JUDGE_DEGRADED и одного сообщения Оператору.
+# Битое / меньше 1 -> 3.
+try:
+    _judge_degraded_n = int(os.getenv("OKO_JUDGE_DEGRADED_N", "3"))
+except ValueError:
+    _judge_degraded_n = 3
+JUDGE_DEGRADED_N: int = _judge_degraded_n if _judge_degraded_n >= 1 else 3
 MAX_REFLECTION_DEPTH: int = int(os.getenv("MAX_REFLECTION_DEPTH", "3"))
 
 # PATCH_V2_STAGNATION: сколько ОДИНАКОВЫХ сбоев подряд (одна и та же
@@ -107,7 +114,17 @@ GPU_CONCURRENCY: int = int(os.getenv("GPU_CONCURRENCY", "1"))
 # каждом импорте — это единственная практическая защита, раз сам код не
 # может знать, что оператор имел в виду.
 BASE_DIR: Path = Path(os.getenv("AI_BASE_DIR", "./data")).resolve()
-print(f"[config] BASE_DIR resolved to: {BASE_DIR}", file=sys.stderr)
+# Флаг диагностики (по умолчанию выключен): только при OKO_DIAG_LOG_TEXT=1 в рабочие логи попадают полный текст
+# проверяемого ответа (JUDGE_TRACE) и полный путь BASE_DIR. В обычном режиме -- длина и sha16 текста, а про
+# BASE_DIR -- имя каталога, относительность AI_BASE_DIR и существование (этого хватает, чтобы заметить запуск не из
+# той папки: неверно разрешённый каталог не существует).
+DIAG_LOG_TEXT: bool = os.getenv("OKO_DIAG_LOG_TEXT", "").strip() == "1"
+if DIAG_LOG_TEXT:
+    print(f"[config] [OKO_DIAG_LOG_TEXT=1] BASE_DIR resolved to: {BASE_DIR}", file=sys.stderr)
+else:
+    print(f"[config] BASE_DIR resolved: name={BASE_DIR.name} "
+          f"relative_env={not Path(os.getenv('AI_BASE_DIR', './data')).is_absolute()} exists={BASE_DIR.is_dir()} "
+          "(full path only with OKO_DIAG_LOG_TEXT=1)", file=sys.stderr)
 
 DB_PATH: Path = BASE_DIR / "knowledge_base.db"
 REGISTRY_FILEPATH: Path = BASE_DIR / os.getenv("REGISTRY_FILENAME", "registry_state.json")
@@ -315,6 +332,31 @@ def _get_env_pos_int(name: str, default: int) -> int:
 # реальным контекстом рантайма Ollama (/api/ps context_length; 4096 при
 # незаданном OLLAMA_CONTEXT_LENGTH). На сам num_ctx запросов НЕ влияет.
 OKO_RUNTIME_NUM_CTX: int = _get_env_pos_int("OKO_RUNTIME_NUM_CTX", 4096)
+
+# --- Проверка длинного ответа судьёй по кускам (20.11) ---
+# Ответ, который не помещается в окно судьи, проверяется по кускам с нахлёстом; текст отдаётся только при
+# вердикте PASS на каждом куске. Размер куска выводится из окна судьи, а не задаётся числом:
+#   (окно в токенах - запас под промпт судьи и вердикт) * символов на токен.
+# JUDGE_CHARS_PER_TOKEN -- оценка сверху (1 токен на 2 символа, с запасом для кириллицы).
+# JUDGE_FRAME_RESERVE_TOKENS -- запас под рамку промпта судьи (правила, пояснения, формат вердикта: около
+# 930 токенов по этой же оценке) и сам вердикт; тест сверяет запас с фактической рамкой.
+# Окно 4096 (обычный контур) -> кусок 6144 символа; окно 8192 (/discuss) -> 14336.
+JUDGE_CHARS_PER_TOKEN: int = 2
+JUDGE_FRAME_RESERVE_TOKENS: int = 1024
+# Нахлёст соседних кусков, % от размера куска (и не меньше одной единицы текста -- см. governor.split_for_judge).
+JUDGE_CHUNK_OVERLAP_PCT: int = 10
+# Потолок числа кусков на один ответ. Ответ длиннее -- блокируется (JUDGE_TOO_LONG), не усекается.
+JUDGE_CHUNK_MAX: int = _get_env_pos_int("OKO_JUDGE_CHUNK_MAX", 8)
+
+
+def judge_chunk_chars(num_ctx: int) -> int:
+    """Размер куска (символы) для окна судьи num_ctx токенов. 0 -- окно не больше запаса: проверять нечем."""
+    return max(0, (int(num_ctx) - JUDGE_FRAME_RESERVE_TOKENS) * JUDGE_CHARS_PER_TOKEN)
+
+
+def judge_overlap_chars(chunk_chars: int) -> int:
+    """Нахлёст (символы) для куска chunk_chars."""
+    return max(1, int(chunk_chars) * JUDGE_CHUNK_OVERLAP_PCT // 100)
 
 # Граница сессии для [DEPTH]: пауза между ответами > N секунд. На историю
 # диалога НЕ влияет (граница истории -- только /newepoch, M7.3).

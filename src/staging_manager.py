@@ -21,7 +21,9 @@ StagingManager принимал Registry и хранил pending_tasks как JS
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
+import stat
 import time
 import uuid
 from pathlib import Path
@@ -31,6 +33,22 @@ import logger as oko_logger
 from src.path_guard import SecurityAccessViolation, guard_path
 
 logger = oko_logger.get_logger("kernel.staging")
+
+
+class StagingPathRejected(ValueError):
+    """Путь задачи из БД не прошёл повторную проверку (вне карантина, ссылка, не обычный файл).
+    Наследник ValueError: вызывающий код (бот) показывает причину так же, как несовпадение хэша."""
+
+
+def _is_link(p: Path) -> bool:
+    """Символическая ссылка или точка повторного разбора Windows (junction и т. п.) -- по самому пути, без перехода."""
+    try:
+        st = os.lstat(p)
+    except OSError:
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    return bool(getattr(st, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 
 
 class StagingManager:
@@ -112,6 +130,22 @@ class StagingManager:
         )
         return task_uuid
 
+    def _checked_staging_path(self, raw: str) -> Path:
+        """Путь из БД -- недоверенные данные: строка могла быть изменена после постановки в карантин. Перед
+        чтением / удалением: сам путь и его каталоги внутри карантина -- не ссылки; путь после разрешения лежит
+        внутри staging_dir (guard_path). Возвращает проверенный путь; иначе StagingPathRejected."""
+        p = Path(raw)
+        if not p.is_absolute():
+            p = self.staging_dir / p
+        probe = Path(os.path.abspath(p))
+        chain = [probe] + [q for q in probe.parents if q != self.staging_dir and self.staging_dir in q.parents]
+        if any(_is_link(q) for q in chain):
+            raise StagingPathRejected(f"staged path rejected: {probe.name} is a symlink / junction (or lies behind one)")
+        try:
+            return guard_path(probe, allowed_root=self.staging_dir)
+        except SecurityAccessViolation as e:
+            raise StagingPathRejected(f"staged path rejected: {probe.name} is outside the staging folder") from e
+
     def approve(self, task_uuid: str) -> Path:
         """Подтверждает задачу и возвращает путь к файлу для индексации.
 
@@ -126,7 +160,15 @@ class StagingManager:
         if not task:
             raise KeyError(f"No pending task with uuid={task_uuid}")
 
-        staging_path = Path(task["staging_path"])
+        # Повторная проверка пути ДО чтения: верный хэш файла вне карантина не делает его одобряемым.
+        try:
+            staging_path = self._checked_staging_path(task["staging_path"])
+        except StagingPathRejected as e:
+            logger.critical("Approve refused for uuid=%s: %s", task_uuid, e)
+            raise
+        if not staging_path.is_file():
+            logger.critical("Approve refused for uuid=%s: %s is not a regular file", task_uuid, staging_path.name)
+            raise StagingPathRejected(f"staged path rejected: {staging_path.name} is not a regular file")
         current_hash = hashlib.sha256(staging_path.read_bytes()).hexdigest()
         if current_hash != task["hash"]:
             logger.critical(
@@ -153,8 +195,18 @@ class StagingManager:
         if not task:
             raise KeyError(f"No pending task with uuid={task_uuid}")
 
-        staging_path = Path(task["staging_path"])
+        # Повторная проверка пути ДО удаления: по строке из БД вне карантина ничего не удаляется; ссылка и
+        # не-файл не трогаются. Задача при отказе остаётся в очереди (видна Оператору), как при несовпадении хэша.
+        try:
+            staging_path = self._checked_staging_path(task["staging_path"])
+        except StagingPathRejected as e:
+            logger.critical("Reject refused for uuid=%s: %s -- nothing deleted", task_uuid, e)
+            raise
         if staging_path.exists():
+            if not staging_path.is_file():
+                logger.critical("Reject refused for uuid=%s: %s is not a regular file -- nothing deleted",
+                                task_uuid, staging_path.name)
+                raise StagingPathRejected(f"staged path rejected: {staging_path.name} is not a regular file")
             staging_path.unlink()
 
         self.repo.delete_task(task_uuid)

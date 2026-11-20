@@ -51,6 +51,8 @@ class WireTV(TVClient):
                                "data": dict(self.state[n["nodeid"]])}} for n in payload["nodes"]
                     if n["nodeid"] in self.state]
             return {"values": vals}
+        if path == "ambilight/currentconfiguration" and method == "GET":   # B20: режим «за картинкой» -> ползунок 710
+            return {"styleName": "FOLLOW_VIDEO", "menuSetting": "STANDARD"}
         if path == "menuitems/settings/update":
             v = payload["values"][0]["value"]
             self._wrote = True
@@ -217,7 +219,10 @@ def test_b07d_rows_whitelist_only(monkeypatch):
     raw = _journal().read_text(encoding="utf-8")
     for r in _rows():
         assert set(r) <= H.SHADOW_FIELDS and H.shadow_validate(r) == r
-    assert "192.0.2" not in raw and str(ADMIN) not in raw and "подсвет" not in raw
+    assert "192.0.2" not in raw and "подсвет" not in raw
+    # идентификатор -- по значениям полей, не по сырому тексту (в метке времени «4242» встречается случайно)
+    assert not any(str(ADMIN) in str(v) for r in _rows() for k, v in r.items() if k not in ("ts", "seq", "latency_ms"))
+    assert not any(k in ("id", "user", "user_id", "chat_id") or k.endswith("_id") for r in _rows() for k in r)
 
 
 def test_b07d_journal_pairs_counted_by_stats(monkeypatch):

@@ -17,7 +17,7 @@ _OKO_RAG = pathlib.Path(__file__).resolve().parent.parent / "oko_rag"
 if str(_OKO_RAG) not in sys.path:
     sys.path.append(str(_OKO_RAG))
 
-retriever = pytest.importorskip("retriever")
+import retriever   # обычный import: сломанный модуль ядра = красный тест, не пропуск
 
 
 def _hits():

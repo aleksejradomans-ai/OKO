@@ -56,6 +56,8 @@ class WireTV(TVClient):
                     raise nxt
                 data = {"value": nxt}
             return {"values": [{"value": {"Nodeid": 710, "Controllable": True, "Available": True, "data": data}}]}
+        if path == "ambilight/currentconfiguration" and method == "GET":   # B20: режим «за картинкой» -> ползунок 710
+            return {"styleName": "FOLLOW_VIDEO", "menuSetting": "STANDARD"}
         if path == "menuitems/settings/update":
             v = payload["values"][0]["value"]
             if self.accept:
@@ -445,7 +447,10 @@ def test_b08d_P6_journal_fields_codes_and_whitelist():
     for o in outcomes():
         assert o["sigma"] in H.SIGMA_OUTCOMES and o["sigma_p"] in H.SIGMA_OUTCOMES
         assert o["a_t"] in (0, 1) and o["sigma_live"] == 0
-    assert str(ADMIN) not in raw and "подсвет" not in raw
+    assert "подсвет" not in raw
+    # идентификатор -- по значениям полей, не по сырому тексту (в метке времени «4242» встречается случайно)
+    assert not any(str(ADMIN) in str(v) for r in rows() for k, v in r.items() if k not in ("ts", "seq", "latency_ms"))
+    assert not any(k in ("id", "user", "user_id", "chat_id") or k.endswith("_id") for r in rows() for k in r)
     assert H.shadow_validate(dict(ts=1, step="outcome", sigma="GO")) is None
     assert H.shadow_validate(dict(ts=1, step="outcome", a_t=True)) is None
     assert H.shadow_validate(dict(ts=1, step="outcome", sigma_why="тревога")) is None

@@ -27,6 +27,9 @@ class TV:
     def set_ambilight_power(self, on):
         self.power.append(on)
 
+    def get_ambilight_config(self):          # B20: яркость идёт по режиму; этот двойник -- «за картинкой» (ползунок 710)
+        return {"styleName": "FOLLOW_VIDEO", "menuSetting": "STANDARD"}
+
 
 def run(phrase, tv):
     c = C.parse(phrase)

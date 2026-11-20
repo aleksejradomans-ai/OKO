@@ -6,8 +6,9 @@
 Инвариант: если Ollama недоступна во время проверки ответа (судья),
 коррекции или повторной проверки, пользователь получает жёлтый
 служебный код, а не непроверенный текст и не текст, который судья
-уже признал нарушением. Нетранспортный сбой судьи (LLMContentError)
-сознательно не меняется (решение Оператора, см. последний тест).
+уже признал нарушением. Нетранспортный сбой судьи (LLMContentError):
+один повтор, затем блокировка кодом JUDGE_ERROR (решение Оператора 20.11,
+прежний «статус-кво» отменён; см. последний тест и test_judge_closed.py).
 
 Фикстуры повторяют test_stagnation_guard.py (изолированный Registry
 на tmp_path, логи перехватываются на governor.logger).
@@ -187,13 +188,23 @@ class TestJudgeTransportFailClosed:
         assert results[1] == "ответ-B"
 
 
-class TestJudgeNonTransportUnchanged:
-    def test_judge_content_error_still_returns_original_unchecked(self, gc, cap):
-        """Решение Оператора 1 (статус-кво): нетранспортный сбой судьи
-        (ответ без поля response) по-прежнему отдаёт ответ как UNCHECKED.
-        Если решение изменится, меняется этот тест."""
+class TestJudgeNonTransportClosed:
+    def test_judge_content_error_retried_then_blocked(self, gc, cap):
+        """Решение Оператора 20.11 (отменяет «статус-кво»): нетранспортный сбой судьи (ответ без поля
+        response) -> один повтор -> блокировка JUDGE_ERROR; текста ответа в результате нет."""
         gov, client = gc
-        client.post.side_effect = [ok("основной ответ"), bad("_judge")]
-        assert run(gov.execute_request("вопрос")) == "основной ответ"
+        client.post.side_effect = [ok("основной ответ"), bad("_judge"), bad("_judge")]
+        result = run(gov.execute_request("вопрос"))
+        assert result == "[ERR: JUDGE_ERROR]" and "основной ответ" not in result
+        assert client.post.call_count == 3                      # ответ + судья + ОДИН повтор судьи
         assert state(gov, "last_compliance_status") == "UNCHECKED"
+        assert state(gov, "compliance_check_failures") == 1
         assert state(gov, "transport_failures") == 0
+        assert gov.monitor.get_unchecked_rate() == 1.0
+        assert cap.red() == [], [r.getMessage() for r in cap.red()]   # жёлтый код: сторож процесса не считает
+
+    def test_judge_content_error_then_retry_ok_returns_checked_answer(self, gc, cap):
+        gov, client = gc
+        client.post.side_effect = [ok("основной ответ"), bad("_judge"), ok("PASS")]
+        assert run(gov.execute_request("вопрос")) == "основной ответ"
+        assert state(gov, "last_compliance_status") == "PASS" and state(gov, "judge_fail_streak") == 0

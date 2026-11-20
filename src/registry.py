@@ -45,6 +45,17 @@ ALLOWED_STATE_KEYS = frozenset({
     "transport_failures",
     "stagnation_breaks",
     "last_stagnation_reason",
+    # судья закрыт при сбое: счётчик сбоев подряд и состояние деградации
+    "judge_fail_streak",
+    "judge_state",
+    "judge_fail_reason",
+    # проверка длинного ответа по кускам: сколько таких проверок, где блокировало, последний блок (без текста)
+    "judge_multi_checks",
+    "judge_multi_block_first",
+    "judge_multi_block_middle",
+    "judge_multi_block_last",
+    "judge_multi_too_long",
+    "last_judge_block",
 })
 
 
@@ -140,6 +151,15 @@ class Registry:
             "transport_failures": 0,
             "stagnation_breaks": 0,
             "last_stagnation_reason": None,
+            "judge_fail_streak": 0,
+            "judge_state": "OK",
+            "judge_fail_reason": None,
+            "judge_multi_checks": 0,
+            "judge_multi_block_first": 0,
+            "judge_multi_block_middle": 0,
+            "judge_multi_block_last": 0,
+            "judge_multi_too_long": 0,
+            "last_judge_block": None,
         }
 
         self._load_checkpoint()
@@ -231,8 +251,9 @@ class Registry:
 
             disk_state = self._read_disk_state()
             self.state = {**self.state, **disk_state, key: value}
-            self._save_checkpoint()
-            return True
+            # Честный возврат: False и тогда, когда запись на диск не состоялась. Значение в памяти при этом
+            # уже новое (процесс работает как раньше) -- False значит «не сохранено», см. unsaved_writes().
+            return self._save_checkpoint()
 
     def get_state(self, key: str, default: Any = None) -> Any:
         with self._data_lock:
@@ -243,6 +264,8 @@ class Registry:
         Использовать вместо паттерна get_state + update_state для счётчиков —
         тот паттерн допускает lost update между конкурентными запросами.
         Возвращает новое значение, либо False при недопустимом/нечисловом ключе.
+        Новое значение возвращается и тогда, когда запись на диск не состоялась (счётчик в памяти верен);
+        узнать о несохранении -- last_save_ok / unsaved_writes() сразу после вызова.
 
         Merge с диском перед вычислением new_value — та же причина, что и в
         update_state: без этого счётчик отсчитывался бы от устаревшей
@@ -270,7 +293,32 @@ class Registry:
     # Persistence
     # ------------------------------------------------------------------
 
-    def _save_checkpoint(self) -> None:
+    @property
+    def last_save_ok(self) -> bool:
+        """Последняя запись состояния на диск состоялась (True и до первой записи)."""
+        return getattr(self, "_unsaved_streak", 0) == 0
+
+    def unsaved_writes(self) -> int:
+        """Сколько записей подряд не легло на диск (0 -- последняя запись сохранена). Состояние в памяти при
+        этом актуально; после перезапуска процесса несохранённое было бы потеряно."""
+        return getattr(self, "_unsaved_streak", 0)
+
+    def _note_save(self, ok: bool) -> bool:
+        """Счётчик несохранённых записей и одно предупреждение на серию (и одно -- при восстановлении)."""
+        streak = getattr(self, "_unsaved_streak", 0)
+        if ok:
+            if streak:
+                logger.warning("[REGISTRY_UNSAVED] запись состояния на диск восстановилась после %d несохранённых", streak)
+            self._unsaved_streak = 0
+            return True
+        self._unsaved_streak = streak + 1
+        self._unsaved_total = getattr(self, "_unsaved_total", 0) + 1
+        if streak == 0:
+            logger.warning("[REGISTRY_UNSAVED] состояние не записано на диск -- живёт только в памяти процесса; "
+                           "следующее предупреждение -- при восстановлении записи")
+        return False
+
+    def _save_checkpoint(self) -> bool:
         """Atomic write: tmp file + os.replace prevents corruption on crash
         mid-write.
 
@@ -290,7 +338,7 @@ class Registry:
             fd, tmp_path = tempfile.mkstemp(dir=dir_, prefix=".registry_tmp_")
         except Exception as e:
             logger.error("Checkpoint save failed (tempfile creation): %s", e)
-            return
+            return self._note_save(False)
 
         try:
             with os.fdopen(fd, "w") as f:
@@ -299,11 +347,11 @@ class Registry:
             logger.error("Checkpoint save failed (write to tmp file): %s", e)
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
-            return
+            return self._note_save(False)
 
-        self._replace_with_retry(tmp_path)
+        return self._note_save(self._replace_with_retry(tmp_path))
 
-    def _replace_with_retry(self, tmp_path: str) -> None:
+    def _replace_with_retry(self, tmp_path: str) -> bool:
         """Делегирует в io_retry.retry_on_permission_error — общую утилиту,
         используемую также knowledge_indexer.py для той же категории
         ошибок (Windows file-lock). Раньше эта логика была собственной
@@ -341,6 +389,7 @@ class Registry:
 
         if not success and os.path.exists(tmp_path):
             os.unlink(tmp_path)
+        return bool(success)
 
     def _load_checkpoint(self) -> None:
         if not os.path.exists(self.filepath):

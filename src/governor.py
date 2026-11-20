@@ -19,6 +19,8 @@ from typing import Optional
 
 import httpx
 
+import hashlib
+
 import config
 import game_mode          # GAME_MODE v2 (02.11)
 import prompt_safety
@@ -112,9 +114,14 @@ def ctx_load_ms(data: dict) -> Optional[int]:
 # JUDGE_FAIL_CLOSED (17.10): JUDGE_UNPARSEABLE -- судья дал нераспознанный
 # вердикт (жёлтый, технический сбой формата); COMPLIANCE_UNRESOLVED --
 # нарушение не устранено коррекцией (красный, как HALT_CONDITION).
+# JUDGE_ERROR (20.11): судья упал не по транспорту дважды подряд (вызов и один повтор) -- ответ не отдаётся
+# (жёлтый, технический сбой, как JUDGE_UNPARSEABLE: перезапуск процесса сторожем сбой судьи не лечит).
+# JUDGE_TOO_LONG (20.11): ответ не помещается в окно судьи даже по кускам (кусков больше потолка) -- ответ
+# не отдаётся и не усекается (жёлтый: это не нарушение и не сбой процесса).
 YELLOW_CODES = frozenset({
     "LLM_TIMEOUT", "LLM_UNAVAILABLE", "STAGNATION_BREAK",
-    "SYSTEM_DEGRADED", "DISCUSS_TIMEOUT", "JUDGE_UNPARSEABLE",
+    "SYSTEM_DEGRADED", "DISCUSS_TIMEOUT", "JUDGE_UNPARSEABLE", "JUDGE_ERROR",
+    "JUDGE_TOO_LONG",
 })
 RED_CODES = frozenset({
     "RETRY_LIMIT_EXCEEDED", "RECOVERY_FAILED", "KERNEL_FAULT", "HALT_CONDITION",
@@ -131,6 +138,11 @@ SPLIT_CODES = frozenset({"DISCUSS_FAULT"})
 # транспорта их не опровергает; история в любом случае остаётся в логе.
 TRANSPORT_LAST_ERROR_PREFIXES = ("LLM_UNAVAILABLE:", "LLM_TIMEOUT:", "DISCUSS_TIMEOUT:")
 SERVICE_CODES = YELLOW_CODES | RED_CODES | SPLIT_CODES
+
+
+def text_sha16(text: str) -> str:
+    """Отпечаток текста для логов: первые 16 hex sha256 от UTF-8. Сам текст в лог не пишется."""
+    return hashlib.sha256((text or "").encode("utf-8", "replace")).hexdigest()[:16]
 
 
 def log_service_code(
@@ -186,6 +198,81 @@ DISCUSS_NUM_CTX = 8192
 # num_ctx здесь не задаётся намеренно: поведение по контексту не меняется
 # относительно прежнего (дефолт рантайма), меняется только сэмплирование.
 DETERMINISTIC_OPTIONS = {"temperature": 0, "seed": 0}
+# Оценка числа токенов промпта судьи по символам (сверху, с запасом для кириллицы): 1 токен на 2 символа.
+JUDGE_CHARS_PER_TOKEN = config.JUDGE_CHARS_PER_TOKEN
+
+
+class JudgeInputTooLong(Exception):
+    """Промпт судьи по оценке не помещается в его окно. Вызов судьи не делается: рантайм обрезал бы вход
+    молча, и вердикт относился бы не ко всему тексту."""
+
+
+# Граница предложения / абзаца: знак конца (с закрывающими кавычками и скобками) и пробелы за ним, либо перевод
+# строки. Разделитель остаётся в конце единицы: склейка единиц даёт исходный текст символ в символ.
+_JUDGE_UNIT_END = re.compile(r"[.!?\u2026]+[\"'\u00bb\u201d)\]]*\s+|\s*\n\s*")
+
+
+def _judge_units(text: str, max_unit: int) -> list:
+    """Текст -> список (единица, начало_предложения). Единица -- предложение или абзац; то, что длиннее
+    max_unit, делится по пробелам (нет пробела -- по длине). Ни один символ не теряется."""
+    sentences, pos = [], 0
+    for m in _JUDGE_UNIT_END.finditer(text):
+        if m.end() > pos:
+            sentences.append(text[pos:m.end()])
+            pos = m.end()
+    if pos < len(text):
+        sentences.append(text[pos:])
+    units = []
+    for sent in sentences:
+        first = True
+        while len(sent) > max_unit:
+            cut = max_unit
+            for k in range(max_unit, 0, -1):
+                if sent[k - 1].isspace():
+                    cut = k
+                    break
+            units.append((sent[:cut], first))
+            sent, first = sent[cut:], False
+        if sent:
+            units.append((sent, first))
+    return units
+
+
+def judge_spans(text: str, size: int, overlap: int) -> list:
+    """Границы кусков (начало, конец) для split_for_judge. Детерминированно: тот же текст -- те же границы."""
+    size = int(size)
+    if size < 2:
+        raise ValueError("chunk size must be >= 2")
+    overlap = max(1, min(int(overlap), size // 2))
+    units = _judge_units(text, overlap)
+    if not units:
+        return [(0, len(text))]
+    offs = [0]
+    for u, _ in units:
+        offs.append(offs[-1] + len(u))
+    spans, start, n = [], 0, len(units)
+    while True:
+        j = start
+        while j < n and offs[j + 1] - offs[start] <= size:
+            j += 1
+        spans.append((offs[start], offs[j]))
+        if j >= n:
+            return spans
+        k = j - 1                                            # не меньше одной единицы
+        while k > start + 1 and offs[j] - offs[k - 1] <= overlap:
+            k -= 1
+        while not units[k][1] and k > start + 1 and offs[j] - offs[k - 1] <= size // 2:
+            k -= 1                                           # до начала предложения
+        start = k
+
+
+def split_for_judge(text: str, size: int, overlap: int) -> list:
+    """Детерминированная нарезка текста на куски не длиннее size символов для проверки судьёй по частям.
+    Границы -- по абзацам и предложениям. Соседние куски перекрываются: следующий начинается с хвоста
+    предыдущего (около overlap символов, не меньше одной единицы; если хвост начинается посреди предложения --
+    назад до его начала, но не больше половины куска), чтобы нарушение не легло на стык.
+    Каждый кусок -- непрерывный фрагмент текста; вместе куски покрывают текст целиком."""
+    return [text[a:b] for a, b in judge_spans(text, size, overlap)]
 
 # CJK_GUARD (02.11): qwen дрейфует в иероглифы посреди русского ответа (A/B identity: «Чтобы列出 PowerShell
 # 中的服务…»). Промпт снижает частоту, но не убирает -- проверка в коде. Классы -- как в response_metrics._CJK.
@@ -368,6 +455,182 @@ class AgentGovernor:
         """TRANSPORT_GATE: CLOSED/OPEN/HALF_OPEN для /status. Только наблюдение."""
         return self._transport_gate.state
 
+    # --- судья: закрыт при сбое + сигнал деградации (20.11) -----------------
+    JUDGE_OK, JUDGE_DEGRADED = "OK", "JUDGE_DEGRADED"
+
+    def pop_judge_notice(self) -> str:
+        """Одноразовое сообщение Оператору о состоянии судьи («сбоит N раз подряд» / «снова работает»).
+        Пусто, если сообщать нечего. Выдаётся один раз: бот дописывает его к ближайшему ответу."""
+        note, self._judge_notice = getattr(self, "_judge_notice", ""), ""
+        return note
+
+    async def _judge_call(self, text: str, num_ctx: Optional[int] = None) -> ComplianceResult:
+        """Вызов судьи с ОДНИМ повтором при нетранспортном сбое (тот же текст). Транспортные сбои не
+        повторяются здесь -- у них своя ветка и свой предохранитель связи. num_ctx -- контекст судьи
+        (None -- как у рантайма; /discuss передаёт свой). JudgeInputTooLong не повторяется: текст тот же."""
+        kw = {} if num_ctx is None else {"num_ctx": num_ctx}
+        self._judge_calls = getattr(self, "_judge_calls", 0) + 1
+        try:
+            return await self._verify_compliance(text, **kw)
+        except (asyncio.TimeoutError, LLMTimeoutError, LLMTransportError, JudgeInputTooLong):
+            raise
+        except Exception as first:  # noqa: BLE001 -- любой сбой судьи: один повтор, затем блокировка
+            logger.warning("Judge failed to run (%s) -- one retry.", type(first).__name__)
+            self._judge_calls += 1
+            return await self._verify_compliance(text, **kw)
+
+    # --- длинный ответ: проверка по кускам (20.11) ---------------------------
+    def _judge_window(self, num_ctx: Optional[int] = None) -> int:
+        """Окно судьи в токенах: переданный num_ctx, иначе контекст рантайма."""
+        return int(num_ctx) if num_ctx else int(config.OKO_RUNTIME_NUM_CTX)
+
+    def _judge_fits(self, text: str, num_ctx: Optional[int] = None) -> bool:
+        """Помещается ли промпт судьи с этим текстом в окно (та же оценка, что перед самим вызовом)."""
+        est_tokens = (len(self._judge_prompt(text)) + 1) // JUDGE_CHARS_PER_TOKEN
+        return est_tokens <= self._judge_window(num_ctx)
+
+    def _judge_pieces(self, text: str, num_ctx: Optional[int] = None) -> list:
+        """Части ответа для судьи: [text], если он помещается в окно целиком; иначе куски с нахлёстом
+        (размер -- config.judge_chunk_chars от окна). Пустой список -- окно меньше запаса под промпт судьи."""
+        if self._judge_fits(text, num_ctx):
+            return [text]
+        size = config.judge_chunk_chars(self._judge_window(num_ctx))
+        if size < 2:
+            return []
+        return split_for_judge(text, size, config.judge_overlap_chars(size))
+
+    def _judge_block_stat(self, i: int, n: int, verdict: str, rule: Optional[str], piece: str, text: str) -> None:
+        """Статистика блокировки: какой кусок из скольких, вердикт, длины и sha16 (без текста). Для
+        многокусковой проверки -- счётчик по положению куска (первый / средний / последний)."""
+        line = (f"chunk {i}/{n} verdict={verdict} rule={rule} chunk_len={len(piece)} "
+                f"chunk_sha16={text_sha16(piece)} text_len={len(text)} text_sha16={text_sha16(text)}")
+        logger.warning("[JUDGE_CHUNK] blocked %s", line)
+        self.registry.update_state("last_judge_block", line)
+        if n > 1 and 1 <= i <= n:
+            pos = "first" if i == 1 else ("last" if i == n else "middle")
+            self.registry.increment_state(f"judge_multi_block_{pos}")
+
+    def _log_judge_time(self, where: str, text: str, t0: float, calls0: int, final: str) -> None:
+        """Задержка проверки на один ответ: число вызовов судьи (с повторами) и суммарное время. Только лог."""
+        result = final[6:-1] if is_service_marker(final) else "PASS"
+        logger.info(
+            "[JUDGE_TIME] where=%s calls=%d elapsed_ms=%d result=%s text_len=%d text_sha16=%s",
+            where, getattr(self, "_judge_calls", 0) - calls0, int((time.monotonic() - t0) * 1000),
+            result, len(text), text_sha16(text),
+        )
+
+    async def _judge_block_only(self, response: str, num_ctx: Optional[int] = None,
+                                where: str = "discuss", after_correction: bool = False) -> str:
+        """Судья «только блокировка»: проверка ВСЕГО ответа без _self_correct. Ответ, который помещается в
+        окно судьи, проверяется одним вызовом; иначе -- по кускам с нахлёстом (_judge_pieces), каждый кусок
+        отдельным вызовом. Текст возвращается только при вердикте PASS на ВСЕХ кусках; первый же кусок без
+        PASS блокирует весь ответ, остальные не проверяются:
+        FAIL -> COMPLIANCE_UNRESOLVED, HALT -> HALT_CONDITION, нераспознанный вердикт -> JUDGE_UNPARSEABLE,
+        сбой судьи (и на повторе этого куска) -> JUDGE_ERROR, транспорт -> LLM_TIMEOUT / LLM_UNAVAILABLE,
+        кусков больше config.JUDGE_CHUNK_MAX (или кусок не помещается в окно) -> JUDGE_TOO_LONG.
+        Статусы реестра и события монитора -- те же, что пишет _enforce_compliance (after_correction --
+        проверка текста после коррекции: статусы с суффиксом _AFTER_CORRECTION).
+        Используется в /discuss и в обычном контуре для ответа, не помещающегося в окно судьи."""
+        suffix = "_AFTER_CORRECTION" if after_correction else ""
+        pieces = self._judge_pieces(response, num_ctx)
+        n = len(pieces)
+        if n != 1:
+            self.registry.increment_state("judge_multi_checks")
+        if n == 0 or n > config.JUDGE_CHUNK_MAX:
+            return self._judge_too_long(response, n, suffix, where)
+        for i, piece in enumerate(pieces, 1):
+            at = where if n == 1 else f"{where}, chunk {i}/{n}"
+            try:
+                result = await self._judge_call(piece, num_ctx)
+            except (asyncio.TimeoutError, LLMTimeoutError, LLMTransportError) as e:
+                self._judge_unchecked(suffix)
+                self._judge_block_stat(i, n, "TRANSPORT", None, piece, response)
+                return self._transport_failure(e)
+            except JudgeInputTooLong:
+                self._judge_block_stat(i, n, "TOO_LONG", None, piece, response)
+                return self._judge_too_long(response, n, suffix, at)
+            except Exception as e:
+                self._judge_unchecked(suffix)
+                self._judge_block_stat(i, n, "JUDGE_FAILED", None, piece, response)
+                return self._judge_failure(e, at)
+
+            if result.verdict != ComplianceVerdict.ERROR:
+                self._judge_ok()
+
+            if result.verdict == ComplianceVerdict.PASS:
+                continue
+
+            self._judge_block_stat(i, n, result.verdict.value, result.violation_id, piece, response)
+            if result.verdict == ComplianceVerdict.ERROR:
+                self._judge_unchecked(suffix)
+                return log_service_code(
+                    "JUDGE_UNPARSEABLE", f"judge verdict not recognised ({at}) — response blocked"
+                )
+
+            if result.verdict == ComplianceVerdict.HALT:
+                return await self._handle_halt_condition(piece, result.violation_id)
+
+            # FAIL: блокировка без прохода коррекции.
+            self.registry.update_state("last_compliance_status", "FAIL" + suffix)
+            if not after_correction:
+                self.registry.increment_state("compliance_violations")
+            self.monitor.record_event(ComplianceEvent.VIOLATION)
+            return log_service_code(
+                "COMPLIANCE_UNRESOLVED",
+                f"rule={result.violation_id}: answer failed the check ({at}) — response blocked (no correction pass)",
+            )
+
+        self.registry.update_state("last_compliance_status", "PASS" + suffix)
+        self.monitor.record_event(ComplianceEvent.PASS)
+        return response
+
+    def _judge_unchecked(self, suffix: str = "") -> None:
+        """Проверка не состоялась: статус UNCHECKED, счётчик и событие монитора."""
+        self.registry.update_state("last_compliance_status", "UNCHECKED" + suffix)
+        self.registry.increment_state("compliance_check_failures")
+        self.monitor.record_event(ComplianceEvent.UNCHECKED)
+
+    def _judge_too_long(self, text: str, n: int, suffix: str, where: str) -> str:
+        """Ответ нельзя проверить целиком даже по кускам: блокировка кодом JUDGE_TOO_LONG, без усечения."""
+        self._judge_unchecked(suffix)
+        self.registry.increment_state("judge_multi_too_long")
+        self.registry.update_state(
+            "last_judge_block",
+            f"too long: chunks={n} max={config.JUDGE_CHUNK_MAX} text_len={len(text)} text_sha16={text_sha16(text)}",
+        )
+        return log_service_code(
+            "JUDGE_TOO_LONG",
+            f"answer is too long to check ({where}): chunks={n} max={config.JUDGE_CHUNK_MAX} "
+            f"text_len={len(text)} text_sha16={text_sha16(text)} — response blocked, not truncated",
+        )
+
+    def _judge_failure(self, error: Exception, where: str) -> str:
+        """Судья упал и на повторе: ответ блокируется кодом JUDGE_ERROR. Счётчик сбоев подряд; на пороге --
+        состояние JUDGE_DEGRADED и одно сообщение (повторно -- только после восстановления)."""
+        reason = type(error).__name__
+        streak = self.registry.increment_state("judge_fail_streak")
+        streak = streak if isinstance(streak, int) and not isinstance(streak, bool) else 0
+        if streak >= config.JUDGE_DEGRADED_N and self.registry.get_state("judge_state") != self.JUDGE_DEGRADED:
+            self.registry.update_state("judge_state", self.JUDGE_DEGRADED)
+            self.registry.update_state("judge_fail_reason", reason)
+            self._judge_notice = (f"Проверяющий сбоит {streak} раз подряд — ответы блокируются; "
+                                  f"причина: {reason}.")
+            logger.warning("[JUDGE_DEGRADED] judge failed %d times in a row (%s) -- responses are blocked", streak, reason)
+        return log_service_code(
+            "JUDGE_ERROR", f"judge failed twice ({reason}, {where}) — response blocked; streak={streak}"
+        )
+
+    def _judge_ok(self) -> None:
+        """Первый успешный вердикт сбрасывает счётчик; после деградации -- одно сообщение о восстановлении."""
+        if not self.registry.get_state("judge_fail_streak") and self.registry.get_state("judge_state") != self.JUDGE_DEGRADED:
+            return
+        self.registry.update_state("judge_fail_streak", 0)
+        if self.registry.get_state("judge_state") == self.JUDGE_DEGRADED:
+            self.registry.update_state("judge_state", self.JUDGE_OK)
+            self.registry.update_state("judge_fail_reason", None)
+            self._judge_notice = "Проверяющий снова работает."
+            logger.warning("[JUDGE_DEGRADED] judge recovered -- responses are checked again")
+
     def transport_retry_in(self) -> float:
         """TRANSPORT_GATE: секунд до следующей пробы связи (0 -- закрыт)."""
         return self._transport_gate.retry_in()
@@ -546,7 +809,9 @@ class AgentGovernor:
             return raw
 
         self._observe_structure(raw, point="A", question=user_input)
+        _jt0, _jc0 = time.monotonic(), getattr(self, "_judge_calls", 0)
         final = await self._enforce_compliance(raw, prompt)
+        self._log_judge_time("main", raw, _jt0, _jc0, final)
         final = await self._cjk_guard(final, prompt)          # CJK_GUARD (02.11)
         if not is_service_marker(final):
             self._observe_structure(final, point="B", question=user_input)
@@ -597,7 +862,7 @@ class AgentGovernor:
     def _observe_metrics(self, text: str, point: str) -> None:
         """RESPONSE_METRICS (M6): пассивные метрики ответа -> одна INFO-строка
         "[METRICS] point=..." без текста ответа. B -- итог execute_request после
-        судьи; D -- ответ /discuss (идёт мимо судьи). Ни одно решение от метрик
+        судьи; D -- ответ /discuss до проверки судьёй. Ни одно решение от метрик
         не зависит (CircuitBreaker, судья, алерты их не читают). Сбой метрики --
         WARNING [METRICS_FAIL], ответ не меняется."""
         try:
@@ -647,11 +912,16 @@ class AgentGovernor:
         user_id: Optional[int] = None,
     ) -> str:
         """/discuss <filename> — полнотекстовое обсуждение одного документа,
-        в обход обычного RAG chunk-retrieval и compliance-judge пайплайна
-        (см. историю решений, Развилка В: доверенная локальная среда,
-        документ уже прошёл HITL-approve через Telegram — двойная проверка
-        output'а через _verify_compliance/_self_correct здесь избыточна и
-        утраивает latency при и без того большом промпте).
+        в обход обычного RAG chunk-retrieval. Ответ проходит судью в режиме
+        «только блокировка» (_judge_block_only, решение Оператора 20.11: единая
+        проверяемость ответов; прежняя «Развилка В» — обход судьи — пересмотрена):
+        проверяется весь ответ (одним вызовом, а если он не помещается в окно судьи —
+        по кускам с нахлёстом, PASS нужен на каждом; кусков больше потолка —
+        JUDGE_TOO_LONG); PASS — ответ как есть; FAIL —
+        COMPLIANCE_UNRESOLVED, HALT — HALT_CONDITION; второго прохода коррекции
+        (_self_correct) нет; сбой судьи — один повтор, затем JUDGE_ERROR (счётчик
+        и JUDGE_DEGRADED общие с обычным контуром); транспортный сбой судьи —
+        обычная транспортная ветка. Текст модели без вердикта PASS не отдаётся.
 
         document_text — полный текст документа целиком. Governor остаётся
         stateless: он не знает, какой пользователь в каком режиме находится
@@ -666,13 +936,11 @@ class AgentGovernor:
         Ollama (см. историю решений, Развилка А) — передаётся через
         options в _call_llm_with_timeout/_route_to_llm.
 
-        НЕ вызывает _enforce_compliance и не инкрементирует
-        compliance_violations/last_compliance_status — эти поля остаются
-        отражением ТОЛЬКО обычного пайплайна execute_request, чтобы не
-        искажать метрику качества ответов данными из принципиально другого,
-        не прошедшего judge-проверку режима. total_requests всё равно
-        инкрементируется — это общий счётчик активности системы, не
-        завязанный на compliance-контур.
+        НЕ вызывает _enforce_compliance (в нём есть проход коррекции), но
+        пишет те же поля, что обычный контур: last_compliance_status,
+        compliance_violations, compliance_check_failures и события монитора —
+        /discuss виден в тех же счётчиках (и в окне CircuitBreaker).
+        total_requests инкрементируется, как раньше.
         """
         self.registry.increment_state("total_requests")
 
@@ -709,11 +977,16 @@ class AgentGovernor:
                 "DISCUSS_FAULT", f"Discuss request failed for user={user_id}: {e}"
             )
         self._clear_transport_error()
-        # RESPONSE_METRICS: /discuss идёт мимо судьи -- метрики здесь единственный
-        # сигнал о качестве ответа (только лог).
+        # RESPONSE_METRICS: пассивные метрики ответа /discuss (только лог), до проверки судьёй.
         if not is_service_marker(answer):
             self._observe_metrics(answer, point="D")
-        return answer
+        # Судья «только блокировка»: весь ответ, без коррекции. Контекст судьи -- как у генерации /discuss
+        # (рантайм не перезагружает модель из-за смены num_ctx). Ответ, который не помещается в окно судьи,
+        # проверяется по кускам; текст отдаётся только при PASS на всех кусках.
+        _jt0, _jc0 = time.monotonic(), getattr(self, "_judge_calls", 0)
+        checked = await self._judge_block_only(answer, num_ctx=DISCUSS_NUM_CTX)
+        self._log_judge_time("discuss", answer, _jt0, _jc0, checked)
+        return checked
 
     @staticmethod
     def _escape_tag(text: str, tag: str) -> str:
@@ -971,11 +1244,17 @@ class AgentGovernor:
         Это решение, не факт; для метрики "качество первого прохода"
         нужен отдельный счётчик (см. историю решений).
 
-        НЕ вызывается из execute_discuss_request (см. историю решений,
-        Развилка В) — /discuss байпасит этот контур целиком.
+        Ответ, который не помещается в окно судьи (20.11), проверяется по кускам
+        в режиме «только блокировка» (_judge_block_only): коррекция для него не
+        запускается, FAIL на любом куске блокирует весь ответ. То же -- для текста
+        после коррекции, если он не помещается в окно.
+
+        /discuss сюда не заходит: там свой вызов _judge_block_only (без коррекции).
         """
+        if not self._judge_fits(response):
+            return await self._judge_block_only(response, where="first pass")
         try:
-            result = await self._verify_compliance(response)
+            result = await self._judge_call(response)
         except (asyncio.TimeoutError, LLMTimeoutError, LLMTransportError) as e:
             # JUDGE_TRANSPORT_F1: Ollama недоступна во время проверки -- ответ
             # не отдаётся непроверенным (иначе судью обходит любая нагрузка
@@ -985,11 +1264,15 @@ class AgentGovernor:
             self.monitor.record_event(ComplianceEvent.UNCHECKED)
             return self._transport_failure(e)
         except Exception as e:
-            logger.warning("Compliance check failed to run: %s", e)
+            # Закрыт при сбое (20.11, отменяет «статус-кво»): судья упал не по транспорту и на повторе --
+            # непроверенный ответ не отдаётся.
             self.registry.update_state("last_compliance_status", "UNCHECKED")
             self.registry.increment_state("compliance_check_failures")
             self.monitor.record_event(ComplianceEvent.UNCHECKED)
-            return response
+            return self._judge_failure(e, "first pass")
+
+        if result.verdict != ComplianceVerdict.ERROR:
+            self._judge_ok()
 
         if result.verdict == ComplianceVerdict.PASS:
             self.registry.update_state("last_compliance_status", "PASS")
@@ -1036,8 +1319,10 @@ class AgentGovernor:
                 f"rule={result.violation_id}: self-correction failed ({e}) — response blocked",
             )
 
+        if not self._judge_fits(corrected):
+            return await self._judge_block_only(corrected, where="after correction", after_correction=True)
         try:
-            re_result = await self._verify_compliance(corrected)
+            re_result = await self._judge_call(corrected)
         except (asyncio.TimeoutError, LLMTimeoutError, LLMTransportError) as e:
             # JUDGE_TRANSPORT_F1: повторная проверка не состоялась из-за
             # транспорта -- непроверенная коррекция не отдаётся.
@@ -1046,11 +1331,14 @@ class AgentGovernor:
             self.monitor.record_event(ComplianceEvent.UNCHECKED)
             return self._transport_failure(e)
         except Exception as e:
-            logger.warning("Re-verification failed to run: %s", e)
+            # Закрыт при сбое (20.11): повторная проверка упала и на повторе -- непроверенная коррекция не отдаётся.
             self.registry.update_state("last_compliance_status", "UNCHECKED_AFTER_CORRECTION")
             self.registry.increment_state("compliance_check_failures")
             self.monitor.record_event(ComplianceEvent.UNCHECKED)
-            return corrected
+            return self._judge_failure(e, "after correction")
+
+        if re_result.verdict != ComplianceVerdict.ERROR:
+            self._judge_ok()
 
         if re_result.verdict == ComplianceVerdict.HALT:
             # Коррекция ухудшила ситуацию до критической — не возвращаем
@@ -1100,16 +1388,9 @@ class AgentGovernor:
         self.monitor.record_event(ComplianceEvent.VIOLATION)
         return marker
 
-    async def _verify_compliance(self, text: str) -> ComplianceResult:
-        """Эвристический judge-вызов. Это фильтр, не гарантия — небольшие
-        локальные модели нестабильны как самооценщики.
-
-        Возвращает структурированный ComplianceResult вместо bool (см.
-        историю решений, Вердикт 2.0) — один LLM-вызов теперь различает
-        PASS / FAIL:<id> / HALT:<id>, а не только да/нет, что даёт
-        возможность различать «исправимое нарушение» от «критического»,
-        не удваивая латентность вторым вызовом."""
-        prompt = (
+    def _judge_prompt(self, text: str) -> str:
+        """Промпт судьи для проверяемого текста (правила, пояснения, текст в границах, формат вердикта)."""
+        return (
             f"RULE {self.manifesto.HARD_PROHIBITION.id} (violation → FAIL): "
             f"{self.manifesto.HARD_PROHIBITION.text}\n"
             f"RULE {self.manifesto.HALT_CONDITION.id} (violation → HALT, more severe): "
@@ -1144,19 +1425,50 @@ class AgentGovernor:
             "Do not explain. Do not add punctuation beyond the single colon shown above. "
             "Do not repeat the question."
         )
+    async def _verify_compliance(self, text: str, num_ctx: Optional[int] = None) -> ComplianceResult:
+        """Эвристический judge-вызов. Это фильтр, не гарантия — небольшие
+        локальные модели нестабильны как самооценщики.
+
+        Возвращает структурированный ComplianceResult вместо bool (см.
+        историю решений, Вердикт 2.0) — один LLM-вызов теперь различает
+        PASS / FAIL:<id> / HALT:<id>, а не только да/нет, что даёт
+        возможность различать «исправимое нарушение» от «критического»,
+        не удваивая латентность вторым вызовом."""
+        prompt = self._judge_prompt(text)
+        # Судья получает текст целиком или не получает вовсе: если оценка длины промпта превышает окно,
+        # рантайм обрезал бы вход молча -- вызов не делается. Длинный ответ режет на куски вызывающий код
+        # (_judge_pieces); сюда такой текст дойти не должен, а если дошёл -- ответ блокируется.
+        options = dict(DETERMINISTIC_OPTIONS)
+        if num_ctx:
+            options["num_ctx"] = int(num_ctx)
+        nctx = self._judge_window(num_ctx)
+        est_tokens = (len(prompt) + 1) // JUDGE_CHARS_PER_TOKEN
+        if est_tokens > nctx:
+            raise JudgeInputTooLong(
+                f"judge prompt does not fit the context: chars={len(prompt)} est_tokens={est_tokens} nctx={nctx} "
+                f"text_len={len(text)} text_sha16={text_sha16(text)}"
+            )
         with _ctx_call("judge"):
             result = await self._call_llm_with_timeout(
-                prompt, timeout=config.JUDGE_TIMEOUT, options=DETERMINISTIC_OPTIONS
+                prompt, timeout=config.JUDGE_TIMEOUT, options=options
             )
         parsed = self._parse_verdict(result, self.manifesto)
         if parsed.verdict != ComplianceVerdict.PASS:
             # JUDGE_TRACE: диагностика ложных блокировок. WARNING, не ERROR --
             # не попадает в счётчик process_watchdog.
+            # Текст ответа -- вне рабочих логов: длина и sha16 (тот же текст даёт тот же отпечаток -- строки
+            # сопоставимы между собой). Полный текст -- только при config.DIAG_LOG_TEXT, отдельной помеченной строкой.
+            raw = result or ""
             logger.warning(
-                "[JUDGE_TRACE] verdict=%s rule=%s raw=%r checked_text=%r",
+                "[JUDGE_TRACE] verdict=%s rule=%s raw_len=%d raw_sha16=%s text_len=%d text_sha16=%s",
                 parsed.verdict.value, parsed.violation_id,
-                (result or "")[:120], text[:400],
+                len(raw), text_sha16(raw), len(text), text_sha16(text),
             )
+            if config.DIAG_LOG_TEXT:
+                logger.warning(
+                    "[JUDGE_TRACE] [OKO_DIAG_LOG_TEXT=1 -- диагностика включена, текст в логе] raw=%r checked_text=%r",
+                    raw[:120], text[:400],
+                )
         return parsed
 
     @staticmethod

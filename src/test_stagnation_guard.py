@@ -33,7 +33,7 @@ SRC_DIR = Path(__file__).resolve().parent
 
 # JUDGE_FAIL_CLOSED: +JUDGE_UNPARSEABLE (жёлтый), +COMPLIANCE_UNRESOLVED (красный).
 YELLOW = {"LLM_TIMEOUT", "LLM_UNAVAILABLE", "STAGNATION_BREAK", "SYSTEM_DEGRADED",
-          "DISCUSS_TIMEOUT", "JUDGE_UNPARSEABLE"}
+          "DISCUSS_TIMEOUT", "JUDGE_UNPARSEABLE", "JUDGE_ERROR", "JUDGE_TOO_LONG"}
 RED = {"RETRY_LIMIT_EXCEEDED", "RECOVERY_FAILED", "KERNEL_FAULT", "HALT_CONDITION",
        "COMPLIANCE_UNRESOLVED"}
 ALL_CODES = YELLOW | RED | {"DISCUSS_FAULT"}
@@ -137,7 +137,7 @@ class TestServiceCodesTable:
     def test_exactly_twelve_codes_with_expected_colors(self):
         import governor
         assert set(governor.SERVICE_CODES) == ALL_CODES
-        assert len(governor.SERVICE_CODES) == 12
+        assert len(governor.SERVICE_CODES) == 14   # 20.11: + JUDGE_ERROR, + JUDGE_TOO_LONG
         assert set(governor.YELLOW_CODES) == YELLOW
         assert set(governor.RED_CODES) == RED
         assert set(governor.SPLIT_CODES) == {"DISCUSS_FAULT"}
@@ -249,6 +249,18 @@ def _sc_judge_unparseable(gov, c):
     return run(gov.execute_request("q"))
 
 
+def _sc_judge_error(gov, c):
+    c.post.side_effect = [ok("ответ"), bad("_judge"), bad("_judge")]      # судья упал, повтор тоже
+    return run(gov.execute_request("q"))
+
+
+def _sc_judge_too_long(gov, c):
+    import config
+    huge = "слово " * (config.JUDGE_CHUNK_MAX * config.OKO_RUNTIME_NUM_CTX)   # кусков больше потолка
+    c.post.side_effect = [ok(huge)]
+    return run(gov.execute_request("q"))
+
+
 def _sc_compliance_unresolved(gov, c):
     c.post.side_effect = [ok("нарушающий"), ok("FAIL:POL_001"),
                           ok("всё ещё нарушающий"), ok("FAIL:POL_001")]
@@ -271,6 +283,8 @@ SCENARIOS = [
     ("KERNEL_FAULT", _sc_kernel_fault, _RED),
     ("HALT_CONDITION", _sc_halt, _RED),
     ("JUDGE_UNPARSEABLE", _sc_judge_unparseable, _WARN),
+    ("JUDGE_ERROR", _sc_judge_error, _WARN),
+    ("JUDGE_TOO_LONG", _sc_judge_too_long, _WARN),
     ("COMPLIANCE_UNRESOLVED", _sc_compliance_unresolved, _RED),
 ]
 
@@ -357,7 +371,7 @@ class TestTrafficLight:
 class TestWatchdogCountsOnlyRed:
     @staticmethod
     def _wd_config(log_path, limit=5):
-        pw = pytest.importorskip("process_watchdog")
+        import process_watchdog as pw   # обычный import: сломанный модуль ядра = красный тест, не пропуск
         return pw, pw.WatchdogConfig(
             target_pid_file=log_path.with_name("pid"),
             heartbeat_file=log_path.with_name("hb"),

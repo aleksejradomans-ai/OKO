@@ -19,12 +19,12 @@ def test_map_is_valid(m):
 
 def test_screen_off_route_equals_live_path(m):
     """Путь по карте == путь, проверенный вживую 3 прогонами и /cam calib auto (camera_watcher.SCREEN_OFF_KEYS)."""
-    cw = pytest.importorskip("camera_watcher")
+    import camera_watcher as cw   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     assert tuple(tm.route("settings.general.power:Выкл. экран", m, press=True)) == cw.SCREEN_OFF_KEYS
 
 
 def test_keys_known_to_tv_control():
-    tvc = pytest.importorskip("tv_control")
+    import tv_control as tvc   # обычный import: сломанный модуль ядра = красный тест, не пропуск
     assert tm.NETWORK_KEYS <= tvc.KEYS
 
 
