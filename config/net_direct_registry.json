@@ -17,6 +17,7 @@
   "src/knowledge_indexer.py": {"libs": ["requests"], "target": "Ollama, локальный адрес (config)"},
   "src/midea_heater.py": {"libs": ["aiohttp"], "target": "обогреватель (облако производителя / локальная сеть, ручной)"},
   "src/net_gateway.py": {"libs": ["http.client", "ssl"], "target": "ШЛЮЗ: белый список config/net_allowlist.json"},
+  "src/onvif_ro.py": {"libs": ["httpx"], "target": "камера, локальная сеть (адрес из настроек): только ONVIF Get*, ручной пробник (B28a)"},
   "src/printer_report.py": {"libs": ["socket"], "target": "принтер, локальная сеть"},
   "src/printer_sources_probe.py": {"libs": ["socket", "urllib.request"], "target": "принтер, локальная сеть (ручной)"},
   "src/rebuild_index_bge_m3.py": {"libs": ["requests"], "target": "Ollama, локальный адрес (config)"},
