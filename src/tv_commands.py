@@ -226,6 +226,33 @@ _HALF_FORMS = ("наполовину", "половину", "половина", "
 _HALF = re.compile(r"(?<![a-zа-я])(наполовину|на половину|половин[уаы]|napolovinu|na polovinu|polovin[uay])(?![a-zа-я])")
 
 
+# B26 P3 (Оператор 20.11 19:53 [1]): «убавь яркость наполовину» = ВДВОЕ от текущей: новое =
+# floor(текущее / 2), не меньше HALVE_MIN (команда никогда не выключает подсветку) и не больше текущего (убавление не
+# поднимает яркость: при 0 -- без записи, «уже предел»). Текущее -- чтением с ТВ по режиму подсветки (как B20); нет
+# чтения -> отказ, ничего не отправлено (не угадывать). Только яркость: глагол убавления + «наполовину / на половину /
+# вдвое / в два раза». «Яркость наполовину» без глагола -- 5 из 10 (B25); «прибавь наполовину» и громкость -- как было.
+HALVE_MIN = 1
+_HALVE_DOWN = re.compile(r"(?<![a-zа-я])(убав\w*|уменьш\w*|сниз\w*|пониз\w*|ubav\w*|umensh\w*)(?![a-zа-я])")
+_TWICE = re.compile(r"(?<![a-zа-я])(вдвое|в два раза|в 2 раза|vdvoe|v dva raza|v 2 raza)(?![a-zа-я])")
+HALVE_NO_DATA = "нет данных о текущей яркости — убавить вдвое не могу, ничего не отправлено"
+HALVE_FLOOR = " — вдвое меньше не убавить (минимум 1, подсветка не выключается)"
+
+
+def _halve_level(cur: int) -> int:
+    """floor(cur / 2), не меньше HALVE_MIN и не больше cur (убавление вдвое не поднимает яркость)."""
+    return min(int(cur), max(HALVE_MIN, int(cur) // 2))
+
+
+def _halve(text: str) -> bool:
+    """Фраза просит убавить яркость вдвое: глагол убавления + «наполовину / вдвое / в два раза», без глагола
+    прибавления и без другого числа («убавь наполовину на 3» -- не это правило)."""
+    if not _HALVE_DOWN.search(text) or _UP_WORDS.search(text):
+        return False
+    if not (_TWICE.search(text) or _half(text)):
+        return False
+    return _num(_TWICE.sub(" ", text)) is None
+
+
 def _dl1(a: str, b: str) -> bool:
     """Расстояние Дамерау-Левенштейна между a и b <= 1 (как router._dl1; копия -- router импортирует этот модуль)."""
     if a == b:
@@ -410,6 +437,11 @@ def parse(text: str) -> Command:
         # 30.10: яркость/насыщенность/«авто» — через меню настроек (menuitems/settings, проверено
         # записью 710: 4->3->4 с чтением). Ответ — значение, прочитанное ПОСЛЕ записи (set_setting_*).
         n = _num(t)
+        # B26 P3: «убавь яркость / подсветку наполовину», «уменьши яркость вдвое» -- вдвое от текущей (чтение с ТВ).
+        # Раньше это правило шага (-1) или чтение. Не для насыщенности и не при слове громкости / звука в фразе.
+        if not re.search(r"насыщенн|громкост|звук", t) and _halve(t):
+            return Command(kind=VERIFIED, name="amb_brightness_set", meta={"halve": True},
+                           run=lambda tv: _amb_bri(tv, None, halve=True))
         if re.search(r"(насыщеннее|ярче цвет|сочнее)", t):
             return Command(kind=VERIFIED, name="amb_sat_up", run=lambda tv: _amb_level(tv, SATURATION, +1))
         if re.search(r"(бледнее|блеклее|спокойнее)", t):
@@ -740,16 +772,24 @@ SATURATION = ("насыщенность", 720, -2, 2)
 FOLLOW_VIDEO_NODE, FOLLOW_VIDEO_AI = 320, 321
 
 
-def _amb_level(tv: Any, spec: tuple, delta: int | None, absolute: int | None = None) -> str:
-    """Ползунок подсветки: +/-шаг или точное значение. Ответ — факт после записи; у края — так и сказано."""
+def _amb_level(tv: Any, spec: tuple, delta: int | None, absolute: int | None = None, halve: bool = False) -> str:
+    """Ползунок подсветки: +/-шаг, точное значение или вдвое от текущего (B26). Ответ — факт после записи; у края —
+    так и сказано."""
     label, node, lo, hi = spec
     cur = tv.get_setting_value(node)
-    want = int(absolute) if absolute is not None else cur + int(delta)
+    if halve:
+        if isinstance(cur, bool) or not isinstance(cur, int):
+            raise ValueError(HALVE_NO_DATA)
+        want = _halve_level(cur)
+    else:
+        want = int(absolute) if absolute is not None else cur + int(delta)
     got = tv.set_setting_value(node, want, lo, hi) if max(lo, min(hi, want)) != cur else cur
     scale = f"{got} из {hi}" if lo == 0 else f"{got:+d} (от {lo} до +{hi})"
     text = f"Подсветка: {label} {scale}"
     if got == cur and want != cur:
         text += " — уже предел" if want > hi or want < lo else ""
+    elif halve and want == cur:
+        text += HALVE_FLOOR
     elif want != got:
         text += f" (просили {want}, предел {lo}…{hi})"
     return text
@@ -803,24 +843,28 @@ def _lounge_now(tv: Any) -> dict | None:
         return None
 
 
-def _amb_bri(tv: Any, delta: int | None, absolute: int | None = None) -> str:
+def _amb_bri(tv: Any, delta: int | None, absolute: int | None = None, halve: bool = False) -> str:
     route = _amb_route(tv)
     if route == "setting":
-        return _amb_level(tv, BRIGHTNESS, delta, absolute)
+        return _amb_level(tv, BRIGHTNESS, delta, absolute, halve=halve)
     if route != "colour":
         raise ValueError(NO_MODE)
     label, _node, lo, hi = BRIGHTNESS
     c = _lounge_now(tv)
     if c is None:
-        raise ValueError("нет данных о цвете подсветки (оттенок / яркость не прочитаны) — ничего не отправлено")
+        raise ValueError(HALVE_NO_DATA if halve else
+                         "нет данных о цвете подсветки (оттенок / яркость не прочитаны) — ничего не отправлено")
     if absolute is not None and not lo <= int(absolute) <= hi:
         raise ValueError(f"яркость {int(absolute)} вне диапазона {lo}…{hi} (режим один цвет), ничего не отправлено")
     cur = lounge_to_level(c["brightness"])
-    want = int(absolute) if absolute is not None else cur + int(delta or 0)
+    if halve:
+        want = _halve_level(cur)
+    else:
+        want = int(absolute) if absolute is not None else cur + int(delta or 0)
     tgt = max(lo, min(hi, want))
     head = f"Подсветка: {MODE_PREFIX}{MODE_COLOUR}, {label}"
     if tgt == cur:
-        return f"{head} {cur} из {hi}" + (" — уже предел" if want != cur else "")
+        return f"{head} {cur} из {hi}" + (" — уже предел" if want != cur else (HALVE_FLOOR if halve else ""))
     raw = level_to_lounge(tgt)
     tv.set_lounge_color(c["hue"], c["saturation"], raw)
     _settle()

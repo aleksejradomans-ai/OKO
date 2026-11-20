@@ -9,6 +9,10 @@
    сверяет фактические пропуски со списком своей платформы (неожиданный или пропавший пропуск -- ошибка).
 3. B25: два джоба (pytest-windows, pytest-linux) с одними и теми же командами pytest; список linux = список windows +
    только тесты, пропускаемые вне Windows по sys.platform (skipif с причиной), -- без ослабления.
+4. B26: прогон -- на push в ветки ci/** и вручную (workflow_dispatch), не на push в опубликованные ветки и не на
+   pull_request; один прогон на коммит (concurrency по github.sha, без отмены); в обоих джобах -- кэш pip по
+   requirements.txt + requirements.lock, --durations=30 у pytest src, отчёты тестов -- артефакт (if: always(),
+   имя с платформой, хранение 7 дней). Имена джобов не меняются (проверки защиты веток привязаны к ним).
 """
 from __future__ import annotations
 
@@ -144,3 +148,48 @@ def test_workflow_has_windows_and_linux_jobs_with_the_same_commands():
         assert "UNEXPECTED SKIP" in job and "MISSING SKIP" in job
     cmds = lambda j: sorted(x.strip() for x in j.splitlines() if x.strip().startswith("python -m p"))
     assert cmds(w) == cmds(li) and len(cmds(w)) == 3      # pip install + pytest src + pytest root/tools
+
+
+# --- B26: запуск на ci/**, один прогон на коммит, кэш pip, --durations, артефакты ------------------------------------
+def _wf_text():
+    wf = ROOT / ".github" / "workflows" / "pytest.yml"
+    if not wf.is_file():
+        pytest.skip("нет .github/workflows/pytest.yml (дерево без каталога CI)")
+    return wf.read_text(encoding="utf-8")
+
+
+def _top_block(text: str, key: str) -> str:
+    m = re.search(rf"^{key}:\n((?:[ #].*\n|\n)*?)(?=^\S)", text, re.M)
+    assert m, f"нет блока {key}:"
+    return m.group(1)
+
+
+def test_workflow_runs_on_ci_branches_and_by_hand_only():
+    text = _wf_text()
+    on = _top_block(text, "on")
+    lines = [x.rstrip() for x in on.splitlines() if x.strip() and not x.strip().startswith("#")]
+    assert lines == ["  push:", "    branches: ['ci/**']", "  workflow_dispatch:"], lines
+    assert "pull_request" not in on and "oko-live" not in on and "main" not in on
+
+
+def test_workflow_one_run_per_commit_not_cancelled():
+    conc = _top_block(_wf_text(), "concurrency")
+    assert "group: pytest-${{ github.sha }}" in conc and "cancel-in-progress: false" in conc
+    assert "github.ref" not in conc
+
+
+def test_both_jobs_cache_pip_durations_and_upload_reports():
+    jobs = _job_blocks(_wf_text())
+    assert sorted(jobs) == ["pytest-linux", "pytest-windows"]               # имена проверок защиты веток
+    for plat, job in (("windows", jobs["pytest-windows"]), ("linux", jobs["pytest-linux"])):
+        assert "uses: actions/setup-python@v5" in job and "cache: pip" in job
+        assert "cache-dependency-path: |\n            requirements.txt\n            requirements.lock" in job
+        src_cmd = [x.strip() for x in job.splitlines() if x.strip().startswith("python -m pytest src ")]
+        assert len(src_cmd) == 1 and " --durations=30 " in src_cmd[0] and "--junitxml=pytest_src.xml" in src_cmd[0]
+        i = job.index("uses: actions/upload-artifact@v4")
+        step = job[job.rindex("- name:", 0, i):]
+        assert "if: always()" in step and f"name: pytest-reports-{plat}" in step and "retention-days: 7" in step
+        for f in ("pytest_src.txt", "pytest_src.xml", "pytest_extra.txt", "pytest_extra.xml"):
+            assert f"            {f}" in step, f
+        assert job.index("skipped tests = known list") < i                    # отчёты -- после всех проверок
+    assert "secrets." not in _wf_text()

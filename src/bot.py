@@ -423,7 +423,11 @@ async def retrieve_context(query: str) -> str:
 
 class _NullIndex:
     """Заглушка до подключения ChromaIndex (F2). События копятся в журнале;
-    после подключения индекса — MemoryCore.rebuild_index()."""
+    после подключения индекса — MemoryCore.rebuild_index().
+    B26: is_null -- явный признак заглушки: MemoryCore не дренирует очередь при записи,
+    счётчик «ждут индексации» (inventory: pending_index) показывает правду."""
+    is_null = True
+
     def upsert(self, event_id, subject_id, text): pass
     def delete_subject(self, subject_id): pass
     def search(self, subject_id, query, k): return []
@@ -490,7 +494,7 @@ def _save_exchange(user_id: int, user_text: str, assistant_text: str) -> bool:
                     )
                     return False
     core.record_exchange(
-        Envelope("telegram", str(user_id), user_text), user_text, assistant_text
+        Envelope("telegram", str(user_id), user_text), user_text, assistant_text, subject_id=sid
     )
     return True
 

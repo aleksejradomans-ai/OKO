@@ -60,7 +60,9 @@ class Envelope:
 
 
 class SemanticIndex(Protocol):
-    """Производный индекс (Chroma и т.п.). Может отказать — ядро это переживёт."""
+    """Производный индекс (Chroma и т.п.). Может отказать — ядро это переживёт.
+    B26: заглушка (индекса ещё нет) объявляет себя явным атрибутом ``is_null = True`` -- тогда запись не дренирует
+    очередь, события честно ждут индексации (inventory: pending_index). Без атрибута -- настоящий индекс."""
     def upsert(self, event_id: int, subject_id: str, text: str) -> None: ...
     def delete_subject(self, subject_id: str) -> None: ...
     def search(self, subject_id: str, query: str, k: int) -> List[int]: ...
@@ -75,6 +77,12 @@ class MemoryCore:
         self.db_path, self.index, self.sanitize = Path(db_path), index, sanitize
         self.backup_dir, self.keep_backups = backup_dir, keep_backups
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # B26: режим журнала WAL хранится в самом файле БД -- включается ОДИН раз здесь, не на каждом соединении.
+        c0 = sqlite3.connect(self.db_path, timeout=10.0)
+        try:
+            c0.execute("PRAGMA journal_mode=WAL")
+        finally:
+            c0.close()
         with self._tx() as c:
             c.executescript(_SCHEMA)
             row = c.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
@@ -85,7 +93,7 @@ class MemoryCore:
 
     def _conn(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.db_path, timeout=10.0)
-        c.execute("PRAGMA journal_mode=WAL")
+        # synchronous и foreign_keys действуют на соединение -- на каждом; journal_mode=WAL -- один раз в __init__
         c.execute("PRAGMA synchronous=FULL")   # коммит переживает падение ОС
         c.execute("PRAGMA foreign_keys=ON")
         return c
@@ -119,6 +127,10 @@ class MemoryCore:
                       (channel, external_id, subject_id))
 
     # --- запись: журнал первым, индекс вторым ----------------------------
+    def _index_is_null(self) -> bool:
+        """B26: индекс -- заглушка (явный атрибут is_null = True): дренаж при записи не вызывается."""
+        return getattr(self.index, "is_null", False) is True
+
     @staticmethod
     def _append(c: sqlite3.Connection, sid: str, channel: str, role: str,
                 clean: str, ts: float) -> int:
@@ -134,19 +146,24 @@ class MemoryCore:
         clean, redacted = self.sanitize(env.text if text is None else text)
         with self._tx() as c:
             eid = self._append(c, sid, env.channel, role, clean, time.time())
-        self.drain_index(limit=1)
+        if not self._index_is_null():
+            self.drain_index(limit=1)
         return eid, redacted
 
-    def record_exchange(self, env: Envelope, user_text: str, assistant_text: str) -> List[str]:
-        """Пара реплик одной транзакцией: либо обе в журнале, либо ни одной."""
-        sid = self.resolve(env.channel, env.external_id)
+    def record_exchange(self, env: Envelope, user_text: str, assistant_text: str,
+                        subject_id: Optional[str] = None) -> List[str]:
+        """Пара реплик одной транзакцией: либо обе в журнале, либо ни одной.
+        B26: subject_id -- уже найденный вызывающим resolve(env.channel, env.external_id) (без второго resolve);
+        не передан -- resolve здесь, как раньше."""
+        sid = subject_id if subject_id is not None else self.resolve(env.channel, env.external_id)
         u, red_u = self.sanitize(user_text)
         a, red_a = self.sanitize(assistant_text)
         now = time.time()
         with self._tx() as c:
             self._append(c, sid, env.channel, "user", u, now)
             self._append(c, sid, env.channel, "assistant", a, now)
-        self.drain_index(limit=2)
+        if not self._index_is_null():
+            self.drain_index(limit=2)
         return red_u + red_a
 
     def import_legacy(self, channel: str, external_id: str,

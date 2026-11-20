@@ -3,20 +3,22 @@
 # skipped tests must equal the list of the platform: .github/known_skips.txt (windows-latest),
 # .github/known_skips_linux.txt (ubuntu-latest) -- an unexpected or a vanished skip fails the job.
 # No secrets, read-only token, network only for installing packages.
+# Triggers: pushes to ci/** branches and manual runs. A commit is checked once; the published branches are moved to
+# an already checked commit (status checks are bound to the commit SHA), so a push to them starts no second run.
+# Test reports (txt + junit xml) are kept as run artifacts for 7 days; the 30 slowest tests are listed in the log.
 name: pytest
 
 on:
   push:
-    branches: [oko-live, main]
-  pull_request:
+    branches: ['ci/**']
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: pytest-${{ github.ref }}
-  cancel-in-progress: true
+  group: pytest-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   pytest-windows:
@@ -36,6 +38,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements.lock
 
       - name: Install dependencies (versions pinned by requirements.lock)
         shell: pwsh
@@ -49,7 +55,7 @@ jobs:
       - name: pytest src
         shell: cmd
         run: |
-          python -m pytest src -q -p no:cacheprovider -rxs --junitxml=pytest_src.xml > pytest_src.txt 2>&1
+          python -m pytest src -q -p no:cacheprovider -rxs --durations=30 --junitxml=pytest_src.xml > pytest_src.txt 2>&1
           set PYTEST_RC=%ERRORLEVEL%
           type pytest_src.txt
           exit /b %PYTEST_RC%
@@ -100,6 +106,19 @@ jobs:
           Write-Output "skipped: got $($got.Count), known $($known.Count), unexpected $($unexpected.Count), missing $($missing.Count)"
           if ($unexpected.Count -or $missing.Count) { exit 1 }
 
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-reports-windows
+          path: |
+            pytest_src.txt
+            pytest_src.xml
+            pytest_extra.txt
+            pytest_extra.xml
+          if-no-files-found: warn
+          retention-days: 7
+
   # The same suite on Linux: the same packages and pytest commands; Windows-only tests are skipped by sys.platform and
   # listed in .github/known_skips_linux.txt. pwsh (preinstalled on the runner) runs the PowerShell tests of the suite.
   pytest-linux:
@@ -119,6 +138,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements.lock
 
       # Qt runtime of the PyQt6 wheel (offscreen platform); without it the window tests would be skipped.
       - name: System libraries (Qt runtime)
@@ -140,7 +163,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          python -m pytest src -q -p no:cacheprovider -rxs --junitxml=pytest_src.xml > pytest_src.txt 2>&1
+          python -m pytest src -q -p no:cacheprovider -rxs --durations=30 --junitxml=pytest_src.xml > pytest_src.txt 2>&1
           PYTEST_RC=$?
           cat pytest_src.txt
           exit $PYTEST_RC
@@ -191,3 +214,16 @@ jobs:
           foreach ($x in $missing) { Write-Output "MISSING SKIP $x" }
           Write-Output "skipped: got $($got.Count), known $($known.Count), unexpected $($unexpected.Count), missing $($missing.Count)"
           if ($unexpected.Count -or $missing.Count) { exit 1 }
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-reports-linux
+          path: |
+            pytest_src.txt
+            pytest_src.xml
+            pytest_extra.txt
+            pytest_extra.xml
+          if-no-files-found: warn
+          retention-days: 7

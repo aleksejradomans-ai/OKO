@@ -326,8 +326,11 @@ def test_half_with_volume_word_in_amb_phrase_writes_nothing(phrase):
 
 
 def test_half_with_direction_or_saturation_keeps_old_rules():
-    assert (C.parse("убавь яркость наполовину").name, C.parse("убавь яркость наполовину").meta) == ("amb_step",
-                                                                                                    {"delta": -1})
+    # B26 P3: «убавь яркость наполовину» -- уже не шаг -1, а вдвое от текущей (тесты ниже); «прибавь» -- прежний шаг
+    assert (C.parse("убавь яркость наполовину").name, C.parse("убавь яркость наполовину").meta) == (
+        "amb_brightness_set", {"halve": True})
+    assert (C.parse("прибавь яркость наполовину").name, C.parse("прибавь яркость наполовину").meta) == ("amb_step",
+                                                                                                        {"delta": 1})
     with pytest.raises(C.Unknown):
         C.parse("насыщенность наполовину")
 
@@ -339,3 +342,118 @@ def test_half_router_goes_to_tv_rule_and_volume_stays_reading():
     assert (r.kind, r.text, r.reason) == (R.TV, "подсветку наполовину", "typo:tv_rule:amb_brightness_set")
     r = R.route("громкость наполовину", intent=None)
     assert (r.kind, r.reason) == (R.TV, "tv_rule:volume_get")
+
+
+# --- B26 P3 (Оператор 20.11 19:53 [1]): «убавь наполовину» = вдвое от текущей, floor, минимум 1 --------------------------
+HALVE_PHRASES = ["убавь яркость наполовину", "подсветку убавь наполовину", "уменьши яркость вдвое",
+                 "уменьши яркость в два раза", "убавь яркость в 2 раза", "снизь яркость наполовину",
+                 "уменьши подсветку вдвое", "Убавь яркость подсветки на половину", "понизь яркость вдвое"]
+
+
+@pytest.mark.parametrize("phrase", HALVE_PHRASES)
+def test_halve_phrases_parse_to_halve_command(phrase):
+    cmd = C.parse(phrase)
+    assert (cmd.kind, cmd.name, cmd.meta) == (C.VERIFIED, "amb_brightness_set", {"halve": True})
+
+
+@pytest.mark.parametrize("cur,new", [(10, 5), (7, 3), (3, 1), (2, 1), (1, 1), (9, 4), (0, 0)])
+def test_halve_level_rule(cur, new):
+    assert C._halve_level(cur) == new and C.HALVE_MIN == 1
+
+
+@pytest.mark.parametrize("cur,new", [(10, 5), (7, 3), (3, 1)])
+def test_halve_colour_mode_writes_floor_half_with_readback(cur, new):
+    tv = AmbTV(hue=85, sat=200, bri=C.level_to_lounge(cur))
+    out = run("убавь яркость наполовину", tv)
+    raw = C.level_to_lounge(new)
+    assert [c for c in tv.writes()] == [("set_lounge_color", 85, 200, raw)] and tv.lounge["brightness"] == raw
+    assert tv.calls[-1] == ("get_lounge_color",)                                # чтение после записи
+    assert out == f"Подсветка: режим один цвет (статичный), яркость {new} из 10"
+
+
+@pytest.mark.parametrize("style", ["FOLLOW_VIDEO", "FOLLOW_AUDIO"])
+@pytest.mark.parametrize("cur,new", [(10, 5), (7, 3), (3, 1)])
+def test_halve_setting_modes_menu_slider(style, cur, new):
+    tv = AmbTV(style=style, b710=cur)
+    assert run("уменьши яркость вдвое", tv) == f"Подсветка: яркость {new} из 10" and tv.setting[710] == new
+    assert tv.writes() == [("set_setting_value", 710, new)]
+
+
+def test_halve_at_one_never_switches_off_no_write():
+    tv = AmbTV(bri=C.level_to_lounge(1))
+    out = run("убавь яркость наполовину", tv)
+    assert tv.writes() == [] and out == "Подсветка: режим один цвет (статичный), яркость 1 из 10" + C.HALVE_FLOOR
+    tv2 = AmbTV(style="FOLLOW_VIDEO", b710=1)
+    assert run("уменьши яркость вдвое", tv2) == "Подсветка: яркость 1 из 10" + C.HALVE_FLOOR and tv2.writes() == []
+
+
+def test_halve_at_zero_does_not_raise_brightness():
+    tv = AmbTV(bri=0)
+    out = run("убавь яркость наполовину", tv)
+    assert tv.writes() == [] and out.startswith("Подсветка: режим один цвет (статичный), яркость 0 из 10")
+
+
+class _NoReadTV(AmbTV):
+    def get_lounge_color(self):
+        self.calls.append(("get_lounge_color",))
+        return {}
+
+    def get_setting_value(self, node):
+        self.calls.append(("get_setting_value", node))
+        return None
+
+
+def test_halve_without_readback_refused_nothing_sent():
+    tv = _NoReadTV()
+    with pytest.raises(ValueError, match="нет данных о текущей яркости"):
+        run("убавь яркость наполовину", tv)
+    assert tv.writes() == []
+    tv2 = _NoReadTV(style="FOLLOW_VIDEO")
+    with pytest.raises(ValueError, match="нет данных о текущей яркости"):
+        run("уменьши яркость вдвое", tv2)
+    assert tv2.writes() == []
+    tv3 = AmbTV(config={})
+    with pytest.raises(ValueError, match="нет данных о режиме"):
+        run("убавь яркость наполовину", tv3)
+    assert tv3.writes() == []
+
+
+def test_halve_readback_fail_is_reported():
+    tv = AmbTV(bri=255, accept=False)
+    out = run("убавь яркость наполовину", tv)
+    assert out.startswith("Подсветка: запрошено яркость 5 из 10") and "телевизор сообщает яркость цвета 255" in out
+
+
+def test_halve_through_handler():
+    tv = AmbTV(bri=C.level_to_lounge(7))
+    assert say(tv, "убавь яркость наполовину") == "Подсветка: режим один цвет (статичный), яркость 3 из 10"
+    assert tv.lounge["brightness"] == C.level_to_lounge(3)
+
+
+def test_halve_without_verb_stays_level_5_and_increase_unchanged():
+    assert C.parse("яркость наполовину").meta == {"level": 5}                 # B25
+    assert C.parse("яркость вдвое").name == "amb_brightness_get"               # без глагола -- прежнее чтение
+    assert (C.parse("прибавь яркость вдвое").name, C.parse("прибавь яркость вдвое").meta) == ("amb_step", {"delta": 1})
+    assert C.parse("убавь яркость наполовину на 3").meta == {"delta": -3}      # другое число -- шаг, как было
+
+
+@pytest.mark.parametrize("phrase", ["убавь громкость наполовину", "уменьши громкость вдвое", "убавь звук наполовину",
+                                    "громкость убавь в два раза"])
+def test_halve_does_not_touch_volume(phrase):
+    cmd = C.parse(phrase)
+    assert cmd.name.startswith("volume_") and "halve" not in cmd.meta
+
+
+def test_halve_saturation_and_volume_word_in_amb_phrase_not_halved():
+    for phrase in ("убавь насыщенность наполовину", "уменьши громкость подсветки вдвое"):
+        try:
+            cmd = C.parse(phrase)
+        except C.Unknown:
+            continue
+        assert "halve" not in cmd.meta, phrase
+
+
+def test_halve_router_goes_to_tv_rule():
+    for phrase in ("убавь яркость наполовину", "уменьши яркость вдвое", "подсветку убавь наполовину"):
+        r = R.route(phrase, intent=None)
+        assert (r.kind, r.reason) == (R.TV, "tv_rule:amb_brightness_set"), phrase

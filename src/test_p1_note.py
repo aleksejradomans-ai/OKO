@@ -17,6 +17,7 @@ class _FakeCore:
     def __init__(self, history):
         self._history = list(history)
         self.recorded = []
+        self.sids = []
 
     def resolve(self, channel, ext_id):
         return "sid-1"
@@ -27,8 +28,9 @@ class _FakeCore:
     def history(self, sid, limit, since_ts=None):
         return self._history[-limit:]
 
-    def record_exchange(self, envelope, user_text, assistant_text):
+    def record_exchange(self, envelope, user_text, assistant_text, subject_id=None):
         self.recorded.append((user_text, assistant_text))
+        self.sids.append(subject_id)
 
 
 @pytest.fixture
@@ -48,6 +50,7 @@ def test_new_answer_persisted_returns_true(fake_core):
     core = fake_core([])
     assert bot._save_exchange(1, "вопрос", LONG) is True
     assert core.recorded == [("вопрос", LONG)]
+    assert core.sids == ["sid-1"]          # B26: найденный subject_id передан, второго resolve нет
 
 
 def test_repeat_other_question_blocked_returns_false_and_logs_fields(fake_core, caplog):
