@@ -115,6 +115,11 @@ python -m pytest src -q
 подставляет временный `AI_BASE_DIR`, фиктивный токен и пустой список админов.
 `test_enforce_compliance_live.py` и `scripts/` — ручные проверки на живой Ollama.
 
+CI (GitHub Actions, `.github/workflows/pytest.yml`) гоняет тот же набор в двух джобах — `pytest-windows`
+(windows-latest) и `pytest-linux` (ubuntu-latest), Python 3.12. Пропуски сверяются строго, по платформе:
+`.github/known_skips.txt` и `.github/known_skips_linux.txt` (на Linux дополнительно пропускаются только
+проверки прав доступа Windows); лишний или пропавший пропуск — красный джоб.
+
 ## Известные ограничения
 
 - Судья — эвристика на той же малой модели; возможны ложные HALT/FAIL.

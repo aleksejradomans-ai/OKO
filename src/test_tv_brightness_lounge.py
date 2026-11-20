@@ -242,3 +242,100 @@ def test_shadow_outcome_feature_lounge_brightness(monkeypatch, tmp_path):
     rows = [json.loads(x) for x in Path(tmp_path / "j" / "sigma_shadow.jsonl").read_text(encoding="utf-8").splitlines()]
     (o,) = [r for r in rows if r["step"] == "outcome"]
     assert o["feature"] == "lounge_brightness" and o["s_obs"] == 255 and o["outcome"] == "FAIL"
+
+
+# --- B25 L2 (Оператор 20.11 18:34, Q5 [1]): «наполовину» для яркости = 5 из 10 -----------------------------------------
+import router as R  # noqa: E402
+
+HALF_PHRASES = ["яркость наполовину", "яркость на половину", "подсветку наполовину", "подсветка наполовину",
+                "яркость половина", "Яркость НАПОЛОВИНУ", "яркость подсветки наполовину"]
+
+
+@pytest.mark.parametrize("phrase", HALF_PHRASES)
+def test_half_is_level_5_same_command_as_number_5(phrase):
+    cmd, five = C.parse(phrase), C.parse("яркость 5")
+    assert (cmd.kind, cmd.name, cmd.meta) == (five.kind, five.name, five.meta) == (C.VERIFIED, "amb_brightness_set",
+                                                                                   {"level": 5})
+    assert C.HALF_LEVEL == 5 and C.BRIGHTNESS[3] == 10
+
+
+@pytest.mark.parametrize("phrase", ["яркость наполовину", "подсветку наполовину", "яркость на половину"])
+def test_half_colour_mode_writes_level_5_with_readback(phrase):
+    tv = AmbTV(hue=85, sat=200, bri=255)
+    out = run(phrase, tv)
+    raw = C.level_to_lounge(5)
+    assert ("set_lounge_color", 85, 200, raw) in tv.calls and tv.lounge["brightness"] == raw
+    assert tv.calls[-1] == ("get_lounge_color",)                                # чтение после записи
+    assert out == "Подсветка: режим один цвет (статичный), яркость 5 из 10"
+
+
+@pytest.mark.parametrize("style", ["FOLLOW_VIDEO", "FOLLOW_AUDIO"])
+def test_half_setting_modes_menu_slider_5(style):
+    tv = AmbTV(style=style, b710=9)
+    assert run("яркость наполовину", tv) == "Подсветка: яркость 5 из 10" and tv.setting[710] == 5
+
+
+def test_half_readback_fail_and_unknown_mode_like_number_5():
+    tv = AmbTV(bri=255, accept=False)
+    out = run("яркость наполовину", tv)
+    assert out.startswith("Подсветка: запрошено яркость 5 из 10") and "телевизор сообщает яркость цвета 255" in out
+    tv2 = AmbTV(config={})
+    with pytest.raises(ValueError, match="нет данных о режиме"):
+        run("подсветку наполовину", tv2)
+    assert tv2.writes() == []
+
+
+def test_half_through_handler():
+    tv = AmbTV(bri=255)
+    assert say(tv, "яркость наполовину") == "Подсветка: режим один цвет (статичный), яркость 5 из 10"
+    assert tv.lounge["brightness"] == C.level_to_lounge(5)
+
+
+@pytest.mark.parametrize("phrase", ["яркость напловину", "яркость наполовниу", "подсветку нполовину",
+                                    "яркость наполовинуу", "яркость полвину"])
+def test_half_typo_dl1_is_level_5(phrase):
+    cmd = C.parse(phrase)
+    assert (cmd.name, cmd.meta) == ("amb_brightness_set", {"level": 5})
+
+
+@pytest.mark.parametrize("phrase", ["яркость наплвну", "яркость пловну", "яркость половинками"])
+def test_half_typo_far_or_short_is_not_half(phrase):
+    assert C.parse(phrase).name == "amb_brightness_get"                        # прежнее чтение, без записи
+
+
+@pytest.mark.parametrize("word,ok", [("наполовину", True), ("напловину", True), ("наполовниу", True),
+                                     ("наплвну", False), ("пловну", False), ("половину", True), ("половна", True),
+                                     ("половник", False)])
+def test_half_detector(word, ok):
+    assert C._half(C.normalize(f"яркость {word}")) is ok
+
+
+@pytest.mark.parametrize("phrase", ["громкость наполовину", "громкость на половину", "громкость половина",
+                                    "громкость напловину"])
+def test_half_does_not_touch_volume(phrase):
+    cmd = C.parse(phrase)
+    assert (cmd.name, cmd.meta) == (C.parse("громкость").name, {}) == ("volume_get", {})
+
+
+@pytest.mark.parametrize("phrase", ["громкость наполовину подсветки", "подсветку на половину громкости",
+                                    "звук подсветки наполовину"])
+def test_half_with_volume_word_in_amb_phrase_writes_nothing(phrase):
+    with pytest.raises(C.Unknown):                                             # как до B25: «не понял режим», без записи
+        C.parse(phrase)
+    assert C.parse("яркость наполовину громкости").name == "amb_brightness_get"  # как до B25: чтение
+
+
+def test_half_with_direction_or_saturation_keeps_old_rules():
+    assert (C.parse("убавь яркость наполовину").name, C.parse("убавь яркость наполовину").meta) == ("amb_step",
+                                                                                                    {"delta": -1})
+    with pytest.raises(C.Unknown):
+        C.parse("насыщенность наполовину")
+
+
+def test_half_router_goes_to_tv_rule_and_volume_stays_reading():
+    r = R.route("яркость наполовину", intent=None)
+    assert (r.kind, r.reason) == (R.TV, "tv_rule:amb_brightness_set")
+    r = R.route("подстветку наполовину", intent=None)                            # опечатка предмета (B18)
+    assert (r.kind, r.text, r.reason) == (R.TV, "подсветку наполовину", "typo:tv_rule:amb_brightness_set")
+    r = R.route("громкость наполовину", intent=None)
+    assert (r.kind, r.reason) == (R.TV, "tv_rule:volume_get")

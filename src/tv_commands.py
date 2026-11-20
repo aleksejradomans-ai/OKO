@@ -216,6 +216,42 @@ _LITTLE = re.compile(r"(?<![a-zа-я])(чуть|чуть-чуть|немного
 _MAX = re.compile(r"(?<![a-zа-я])(максимум\w*|на полную|до упора|максимальн\w*)(?![a-zа-я])")
 _MIN = re.compile(r"(?<![a-zа-я])(минимум\w*|минимальн\w*)(?![a-zа-я])")
 
+# B25 L2 (Оператор 20.11 18:34, Q5 [1]): «наполовину / половина / на половину» для ЯРКОСТИ = уровень 5 из 10 -- то же,
+# что «яркость 5» (та же запись и чтение после записи). Раньше «яркость наполовину» только читала яркость, «подсветку
+# наполовину» -- отказ «не понял режим». Опечатка: одно слово длиной >= HALF_TYPO_MIN_LEN на расстоянии
+# Дамерау-Левенштейна <= 1 от формы (правило B18: только длинные слова, кириллица). Громкость этим правилом НЕ меняется.
+HALF_LEVEL = 5
+HALF_TYPO_MIN_LEN = 7
+_HALF_FORMS = ("наполовину", "половину", "половина", "половины")
+_HALF = re.compile(r"(?<![a-zа-я])(наполовину|на половину|половин[уаы]|napolovinu|na polovinu|polovin[uay])(?![a-zа-я])")
+
+
+def _dl1(a: str, b: str) -> bool:
+    """Расстояние Дамерау-Левенштейна между a и b <= 1 (как router._dl1; копия -- router импортирует этот модуль)."""
+    if a == b:
+        return True
+    la, lb = len(a), len(b)
+    if abs(la - lb) > 1:
+        return False
+    if la == lb:
+        diff = [i for i in range(la) if a[i] != b[i]]
+        return len(diff) == 1 or (len(diff) == 2 and diff[1] == diff[0] + 1
+                                  and a[diff[0]] == b[diff[1]] and a[diff[1]] == b[diff[0]])
+    if la > lb:
+        a, b = b, a
+    i = 0
+    while i < len(a) and a[i] == b[i]:
+        i += 1
+    return a[i:] == b[i + 1:]
+
+
+def _half(text: str) -> bool:
+    """В нормализованном тексте есть «наполовину / на половину / половина» (или одна опечатка в длинном слове)."""
+    if _HALF.search(text):
+        return True
+    return any(len(w) >= HALF_TYPO_MIN_LEN and any(_dl1(w, f) for f in _HALF_FORMS)
+               for w in re.findall(r"[а-я]+", text))
+
 
 def _direction(text: str) -> int:
     """+1 / -1 по словам направления без числа («пониже», «чуть ниже», «погромче»); 0 — нет или оба."""
@@ -396,6 +432,13 @@ def parse(text: str) -> Command:
         if n is not None and re.search(r"насыщенност", t):
             return Command(kind=VERIFIED, name="amb_sat_set", meta={"level": n},
                            run=lambda tv: _amb_level(tv, SATURATION, None, n))
+        # B25 L2: «яркость / подсветку наполовину» -- уровень 5 из 10, как «яркость 5». Только без знака и направления
+        # («убавь наполовину» -- прежнее правило шага), не для насыщенности и не при слове громкости / звука в той же
+        # фразе («громкость наполовину подсветки» -- прежнее чтение, без записи).
+        if (n is None and not sign and not _direction(t) and not re.search(r"насыщенн|громкост|звук", t)
+                and _half(t)):
+            return Command(kind=VERIFIED, name="amb_brightness_set", meta={"level": HALF_LEVEL},
+                           run=lambda tv: _amb_bri(tv, None, HALF_LEVEL))
         if n is None and (_MAX.search(t) or _MIN.search(t)):
             lvl = BRIGHTNESS[3] if _MAX.search(t) else BRIGHTNESS[2]
             return Command(kind=VERIFIED, name="amb_brightness_set", meta={"level": lvl},

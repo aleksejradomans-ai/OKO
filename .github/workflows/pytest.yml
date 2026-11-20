@@ -1,6 +1,7 @@
-# CI: the test suite of the public snapshot on a clean Windows runner.
+# CI: the test suite of the public snapshot on clean Windows and Linux runners (two jobs, both required).
 # Same command as the local "pytest src" run on the exported snapshot; xfail ids must equal .github/known_xfail.txt,
-# skipped tests must equal .github/known_skips.txt (an unexpected or a vanished skip fails the job).
+# skipped tests must equal the list of the platform: .github/known_skips.txt (windows-latest),
+# .github/known_skips_linux.txt (ubuntu-latest) -- an unexpected or a vanished skip fails the job.
 # No secrets, read-only token, network only for installing packages.
 name: pytest
 
@@ -18,7 +19,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  pytest:
+  pytest-windows:
+    name: pytest-windows
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -80,6 +82,98 @@ jobs:
         shell: pwsh
         run: |
           $known = @(Get-Content .github/known_skips.txt -Encoding utf8 | Where-Object { $_.Trim() -and -not $_.StartsWith("#") } | ForEach-Object { $_.Trim() } | Sort-Object)
+          $got = @()
+          foreach ($f in @("pytest_src.xml", "pytest_extra.xml")) {
+            if (-not (Test-Path $f)) { Write-Output "MISSING REPORT $f"; exit 1 }
+            $x = New-Object System.Xml.XmlDocument
+            $x.Load((Resolve-Path $f).Path)
+            foreach ($tc in $x.SelectNodes("//testcase[skipped]")) {
+              $sk = $tc.SelectSingleNode("skipped")
+              if ($sk.GetAttribute("type") -eq "pytest.xfail") { continue }
+              $got += "$($tc.GetAttribute('classname'))::$($tc.GetAttribute('name')) | $($sk.GetAttribute('message'))"
+            }
+          }
+          $unexpected = @($got | Where-Object { $known -notcontains $_ })
+          $missing = @($known | Where-Object { $got -notcontains $_ })
+          foreach ($x in $unexpected) { Write-Output "UNEXPECTED SKIP $x" }
+          foreach ($x in $missing) { Write-Output "MISSING SKIP $x" }
+          Write-Output "skipped: got $($got.Count), known $($known.Count), unexpected $($unexpected.Count), missing $($missing.Count)"
+          if ($unexpected.Count -or $missing.Count) { exit 1 }
+
+  # The same suite on Linux: the same packages and pytest commands; Windows-only tests are skipped by sys.platform and
+  # listed in .github/known_skips_linux.txt. pwsh (preinstalled on the runner) runs the PowerShell tests of the suite.
+  pytest-linux:
+    name: pytest-linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      QT_QPA_PLATFORM: offscreen
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Qt runtime of the PyQt6 wheel (offscreen platform); without it the window tests would be skipped.
+      - name: System libraries (Qt runtime)
+        shell: bash
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+
+      - name: Install dependencies (versions pinned by requirements.lock)
+        shell: pwsh
+        run: |
+          python --version
+          pwsh --version
+          python -m pip install -c requirements.lock -r requirements.txt pytest pillow pypdf scipy python-docx openpyxl pyloudnorm PyQt6 pymupdf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # bash with set +e: the report is printed before the exit code of pytest is returned (same as the cmd step).
+      - name: pytest src
+        shell: bash
+        run: |
+          set +e
+          python -m pytest src -q -p no:cacheprovider -rxs --junitxml=pytest_src.xml > pytest_src.txt 2>&1
+          PYTEST_RC=$?
+          cat pytest_src.txt
+          exit $PYTEST_RC
+
+      # Tests outside src/ that need no network and no live model (explicit list; testpaths is not changed).
+      - name: pytest root and tools
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          python -m pytest test_data_hygiene.py tools/test_calibrate_sigma.py tools/test_check_sigma_2e.py -q -p no:cacheprovider -rxs --junitxml=pytest_extra.xml > pytest_extra.txt 2>&1
+          PYTEST_RC=$?
+          cat pytest_extra.txt
+          exit $PYTEST_RC
+
+      - name: xfail ids = known list
+        if: always()
+        shell: pwsh
+        run: |
+          $known = @(Get-Content .github/known_xfail.txt | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim() } | Sort-Object)
+          $got = @(Get-Content pytest_src.txt, pytest_extra.txt | Where-Object { $_.StartsWith("XFAIL ") } | ForEach-Object { ($_.Substring(6) -split ' - ', 2)[0].Trim() } | Sort-Object)
+          $unexpected = @($got | Where-Object { $known -notcontains $_ })
+          $missing = @($known | Where-Object { $got -notcontains $_ })
+          foreach ($x in $unexpected) { Write-Output "UNEXPECTED XFAIL $x" }
+          foreach ($x in $missing) { Write-Output "MISSING XFAIL $x" }
+          Write-Output "xfail: got $($got.Count), known $($known.Count), unexpected $($unexpected.Count), missing $($missing.Count)"
+          if ($unexpected.Count -or $missing.Count) { exit 1 }
+
+      - name: skipped tests = known list
+        if: always()
+        shell: pwsh
+        run: |
+          $known = @(Get-Content .github/known_skips_linux.txt -Encoding utf8 | Where-Object { $_.Trim() -and -not $_.StartsWith("#") } | ForEach-Object { $_.Trim() } | Sort-Object)
           $got = @()
           foreach ($f in @("pytest_src.xml", "pytest_extra.xml")) {
             if (-not (Test-Path $f)) { Write-Output "MISSING REPORT $f"; exit 1 }
