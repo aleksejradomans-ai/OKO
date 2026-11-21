@@ -6,9 +6,17 @@
   python tools/quarantine_state_cli.py zoom <weekly_uuid> [--db P]
   python tools/quarantine_state_cli.py cycle --root DIR [--glob knowledge_*] [--weekly-on Sun|none] [--dry-run] [--log P]
     (лог по умолчанию -- logs/quarantine_state.log в корне репозитория; строка на каталог + итог цикла)
-  python tools/quarantine_state_cli.py record-run <file.json | -> [--db P]
+  python tools/quarantine_state_cli.py record-run <file.json | -> [--db P] [--source block|backfill]
     (объект или список объектов: task, block, started_at, ended_at, steps, rollbacks, uac, hitl, parse_errors,
-     net_errors, flaky, signal -- только числа и коды; повтор той же записи -- та же строка)
+     net_errors, flaky, signal -- только числа и коды; повтор той же записи -- та же строка;
+     --source backfill: счётчик null = не выведен; по желанию report_sha16, outcome, fail_stage, fail_code, salt;
+     записи пишутся по порядку списка -- attempt считается по уже записанным)
+  python tools/quarantine_state_cli.py migrate --backup-dir DIR [--db P]
+    (run_metrics v1 -> v2: копия базы в DIR, затем перенос в одной транзакции; на v2 -- ничего)
+  python tools/quarantine_state_cli.py read-run <run_id> [--db P]
+  python tools/quarantine_state_cli.py import-retro <events.json> [--db P]
+    (ретро-разбор: список событий source=retro_audit; совпавшие с дозаписью дополняются, прочие -- новые строки;
+     повтор не дублирует; вывод: total / inserted / new_rows / matched / rejected / conflicts)
 Вывод -- одна строка JSON (без имён файлов и содержимого). Код возврата 0; ошибка аргументов -- 2;
 record-run: неверная запись -- 2, ни одна запись этого вызова не пишется."""
 import argparse
@@ -43,6 +51,13 @@ def main(argv=None) -> int:
     c.add_argument("--log", default=str(Path(__file__).resolve().parent.parent / "logs" / "quarantine_state.log"))
     rr = sub.add_parser("record-run")
     rr.add_argument("json")
+    rr.add_argument("--source", default="block", choices=("block", "backfill"))
+    mg = sub.add_parser("migrate")
+    mg.add_argument("--backup-dir", required=True)
+    rd = sub.add_parser("read-run")
+    rd.add_argument("run_id")
+    ir = sub.add_parser("import-retro")
+    ir.add_argument("json")
     a = ap.parse_args(argv)
     db = Path(a.db) if a.db else None
     if a.cmd == "snapshot":
@@ -63,13 +78,41 @@ def main(argv=None) -> int:
             for x in recs:                                   # сначала проверка всех, потом запись
                 if not isinstance(x, dict):
                     raise ValueError("запись -- объект JSON")
-                qs.validate_run(x)
+                qs.validate_run(x, allow_null=a.source != "block")
+                sh = x.get("report_sha16")
+                if sh is not None and not qs._SHA16_RE.match(str(sh)):
+                    raise ValueError("report_sha16: 16 строчных шестнадцатеричных знаков")
+                qs.validate_outcome(x.get("outcome"), qs.validate_run(x, allow_null=True)[6], x.get("fail_stage"),
+                                    x.get("fail_code"))
+                if x.get("salt") is not None and not qs._SALT_RE.match(str(x["salt"])):
+                    raise ValueError("salt: 8..64 строчных шестнадцатеричных знаков")
         except ValueError as e:
             sys.stdout.buffer.write((json.dumps({"cmd": "record-run", "error": str(e)}, ensure_ascii=False) + "\n").encode("utf-8"))
             return 2
-        res = [qs.record_run(x, db) for x in recs]
+        try:
+            res = [qs.record_run(x, db, source=a.source, report_sha16=x.get("report_sha16"), outcome=x.get("outcome"),
+                                 fail_stage=x.get("fail_stage"), fail_code=x.get("fail_code"), salt=x.get("salt"))
+                   for x in recs]
+        except qs.SchemaError as e:
+            sys.stdout.buffer.write((json.dumps({"cmd": "record-run", "error": str(e)}, ensure_ascii=False) + "\n").encode("utf-8"))
+            return 3
         r = {"cmd": "record-run", "records": len(res), "new": sum(1 for x in res if x["new"]),
-             "run_ids": [x["run_id"] for x in res]}
+             "run_ids": [x["run_id"] for x in res], "attempts_max": max([x["attempt"] for x in res] or [0])}
+    elif a.cmd == "migrate":
+        r = dict(qs.migrate_run_metrics(db, Path(a.backup_dir)), cmd="migrate")
+    elif a.cmd == "import-retro":
+        evs = json.loads(Path(a.json).read_text(encoding="utf-8-sig"))
+        if not isinstance(evs, list):
+            sys.stdout.buffer.write((json.dumps({"cmd": "import-retro", "error": "список событий"}, ensure_ascii=False) + "\n").encode("utf-8"))
+            return 2
+        try:
+            r = dict(qs.import_retro(evs, db), cmd="import-retro")
+        except qs.SchemaError as e:
+            sys.stdout.buffer.write((json.dumps({"cmd": "import-retro", "error": str(e)}, ensure_ascii=False) + "\n").encode("utf-8"))
+            return 3
+    elif a.cmd == "read-run":
+        row = qs.read_run(a.run_id, db)
+        r = {"cmd": "read-run", "found": row is not None, "row": row}
     else:
         wo = None if a.weekly_on.lower() == "none" else a.weekly_on
         c = qs.cycle(Path(a.root), a.glob, wo, db, a.dry_run, log=Path(a.log) if a.log else None)

@@ -14,6 +14,21 @@
 run_metrics (B15): числовые метрики прогонов блоков (задача, блок, начало/конец, шаги, откаты, UAC, HITL, ошибки
 разбора и сети, повторы нестабильных тестов FLAKY, сигнал) -- record_run(); weekly() добавляет по суткам ряды run.* в тот же поиск точек спада (k * MAD).
 Без строк run_metrics недельный слепок такой же, как раньше.
+Схема run_metrics v2 (B29): счётчики допускают NULL (значение не выведено из машинных строк -- не догадка), столбцы
+source (block -- запись самим блоком при закрытии; backfill* -- дозапись), report_sha16, outcome (GREEN / RED / ASK /
+ROLLBACK / STOP / MANUAL / NOT_STARTED; у incident -- FAIL / CAUGHT / WARN / WAIT / FOUND), kind (block_run |
+incident), boundary (стык), day, time_text (время как в источнике), fail_stage и fail_code (NULL у GREEN), attempt (номер попытки задача+блок за сутки -- по
+чтению таблицы). Каждый запуск -- своя строка: run_id блока = uuid5(task, block, started_at, соль запуска); строки
+не перезаписываются (INSERT OR IGNORE; та же run_id с другими полями -- расхождение при чтении назад). Старая база (v1) переводится
+только явно: migrate_run_metrics() -- копия базы, затем перенос в одной транзакции, старые строки -> source
+backfill_text_b15. read_run() -- чтение строки назад новым соединением (закрытие блока, src/block_finish.py).
+weekly() читает и серию искажений distortions_YYYY-MM-DD.json (каталог dist_dir, по умолчанию -- каталог базы):
+ряды dist.<стык> (by_boundary) и dist_kind.<вид> (series).
+Поправка B29 (видеть паттерны сбоев): точка ряда None = «нет данных»
+(суток нет в источнике ряда или счётчик дня NULL) -- не участвует в медиане / MAD; меньше 3 известных точек -- ряд
+insufficient, точки не ищутся. Направление ряда -- таблица DIRECTIONS (одно место): «плохо = рост» -> всплески вверх
+(x > median + k * scale), «плохо = падение» -> провалы вниз (x < median - k * scale); ряд без направления в поиск не
+идёт и попадает в undirected (тест требует, чтобы таких не было).
 cycle(root): для каждого каталога root/<glob>: snapshot (идемпотентно в пределах суток), purge (dry-run -- только
 отчёт), в выбранный день недели -- weekly; одна строка-итог на каталог и итог цикла, по строке в лог-файл.
 purge(dir): каталог удаляется ТОЛЬКО если есть слепок с тем же агрегатом (пересчёт перед удалением) И возраст
@@ -50,6 +65,42 @@ CATEGORY_RULES = (
 METRICS = ("files", "bytes")
 RUN_COUNTS = ("steps", "rollbacks", "uac", "hitl", "parse_errors", "net_errors", "flaky")
 RUN_SIGNALS = (1, 2, 3, 5)
+RUN_SCHEMA = 2
+RUN_SOURCES = ("block", "backfill", "backfill_text_b15")
+RETRO = "retro_audit"
+OUTCOMES = {"GREEN": 1, "RED": 2, "ROLLBACK": 2, "STOP": 2, "NOT_STARTED": 2, "ASK": 3, "MANUAL": 5}
+# NOT_STARTED у строки блока: обёртка запустилась, но UAC истёк / отменён (сигнал 2); у ретро-строки -- сигнала нет
+WAITS = ("launch_delay_s", "uac_wait_s", "hitl_wait_s")      # секунды; NULL = не измерялось, 0 = ожидания не было
+INCIDENT_OUTCOMES = ("FAIL", "CAUGHT", "WARN", "WAIT", "FOUND")
+_TASKCODE_RE = re.compile(r"^[A-Za-z0-9_?]{1,16}$")                    # incident: источник (метка) или код с «?»
+_BOUNDARY_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_EXACT_TIME_RE = re.compile(r"^([01][0-9]|2[0-3]):([0-5][0-9])$")
+BLOCK_ALIASES = {"promote": "push_promote", "stage": "push_stage"}
+SIGNAL_OUTCOME = {1: "GREEN", 2: "RED", 3: "ASK", 5: "MANUAL"}
+_STAGE_RE = re.compile(r"^[A-Za-z0-9_./-]{1,24}$")
+_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
+_SALT_RE = re.compile(r"^[0-9a-f]{8,64}$")
+_SHA16_RE = re.compile(r"^[0-9a-f]{16}$")
+_DIST_RE = re.compile(r"^distortions_(\d{4}-\d{2}-\d{2})\.json$")
+_DIST_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+RUN_DDL = """CREATE TABLE IF NOT EXISTS run_metrics (
+        run_id TEXT PRIMARY KEY, task TEXT NOT NULL, block TEXT NOT NULL, started_at TEXT,
+        ended_at TEXT, duration_s REAL, steps INTEGER, rollbacks INTEGER,
+        uac INTEGER, hitl INTEGER, parse_errors INTEGER, net_errors INTEGER,
+        flaky INTEGER, signal INTEGER, recorded_at TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'block', report_sha16 TEXT, outcome TEXT NOT NULL,
+        fail_stage TEXT, fail_code TEXT, attempt INTEGER,
+        kind TEXT NOT NULL DEFAULT 'block_run', boundary TEXT, day TEXT NOT NULL, time_text TEXT,
+        launch_ts TEXT, launch_delay_s REAL, uac_wait_s REAL, hitl_wait_s REAL, retro_conflict INTEGER)"""
+# started_at / ended_at / duration_s / signal / attempt = NULL только у строк ретро-разбора (время из источника
+# неточное, сигнала нет); строки блока (block) и дозаписи (backfill) -- всегда со временем и сигналом
+RUN_COLS = ("run_id", "task", "block", "started_at", "ended_at", "duration_s") + RUN_COUNTS + (
+    "signal", "recorded_at", "source", "report_sha16", "outcome", "fail_stage", "fail_code", "attempt",
+    "kind", "boundary", "day", "time_text", "launch_ts") + WAITS + ("retro_conflict",)
+
+
+class SchemaError(RuntimeError):
+    """run_metrics старой схемы (v1): запись новых строк -- только после migrate_run_metrics()."""
 _TASK_RE = re.compile(r"^B\d{2}[a-z]?$")
 _BLOCK_RE = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
 
@@ -165,12 +216,72 @@ def connect(db: Optional[Path] = None) -> sqlite3.Connection:
         weekly_uuid TEXT PRIMARY KEY, end_day TEXT NOT NULL, n_days INTEGER NOT NULL, partial INTEGER NOT NULL,
         daily_uuids_json TEXT NOT NULL, aggregate_json TEXT NOT NULL, dips_json TEXT NOT NULL, k REAL NOT NULL,
         created_at TEXT NOT NULL)""")
-    con.execute("""CREATE TABLE IF NOT EXISTS run_metrics (
-        run_id TEXT PRIMARY KEY, task TEXT NOT NULL, block TEXT NOT NULL, started_at TEXT NOT NULL,
-        ended_at TEXT NOT NULL, duration_s REAL NOT NULL, steps INTEGER NOT NULL, rollbacks INTEGER NOT NULL,
-        uac INTEGER NOT NULL, hitl INTEGER NOT NULL, parse_errors INTEGER NOT NULL, net_errors INTEGER NOT NULL,
-        flaky INTEGER NOT NULL, signal INTEGER NOT NULL, recorded_at TEXT NOT NULL)""")
+    con.execute(RUN_DDL)                      # новая база -- сразу v2; существующая таблица не меняется (только migrate)
     return con
+
+
+def run_schema(con: sqlite3.Connection) -> int:
+    """Версия схемы run_metrics: 0 -- таблицы нет, 1 -- B15 (без source), 2 -- B29."""
+    cols = [r[1] for r in con.execute("PRAGMA table_info(run_metrics)")]
+    if not cols:
+        return 0
+    return RUN_SCHEMA if {"source", "report_sha16", "outcome", "attempt", "kind", "boundary", "day", "launch_ts",
+                          "uac_wait_s", "hitl_wait_s", "retro_conflict"} <= set(cols) else 1
+
+
+def migrate_run_metrics(db: Optional[Path] = None, backup_dir: Optional[Path] = None,
+                        now: Optional[dt.datetime] = None) -> dict:
+    """v1 -> v2. Сначала копия всей базы в backup_dir (обязателен для v1; копия сверяется по числу строк),
+    затем в одной транзакции: новая таблица, перенос строк (source = backfill_text_b15, report_sha16 = NULL),
+    замена старой. Повтор на v2 -- ничего не делает (migrated=False). Числа строк до/после -- в результате."""
+    now = now or dt.datetime.now()
+    db = Path(db or default_db())
+    con = connect(db)
+    try:
+        ver = run_schema(con)
+        n0 = con.execute("SELECT count(*) FROM run_metrics").fetchone()[0]
+        if ver == RUN_SCHEMA:
+            return {"migrated": False, "schema": ver, "rows": n0, "backup": None}
+        if backup_dir is None:
+            raise ValueError("backup_dir: обязателен при переводе схемы v1")
+        bdir = Path(backup_dir)
+        bdir.mkdir(parents=True, exist_ok=True)
+        bpath = bdir / f"{db.stem}_v1_{now.strftime('%Y%m%d_%H%M%S')}.db"
+        if bpath.exists():
+            raise FileExistsError(f"копия уже есть: {bpath.name}")
+        bcon = sqlite3.connect(str(bpath))
+        try:
+            con.backup(bcon)
+            nb = bcon.execute("SELECT count(*) FROM run_metrics").fetchone()[0]
+        finally:
+            bcon.close()
+        if nb != n0:
+            raise RuntimeError(f"копия базы: строк {nb}, в базе {n0}")
+        old = ", ".join(("run_id", "task", "block", "started_at", "ended_at", "duration_s") + RUN_COUNTS
+                        + ("signal", "recorded_at"))
+        con.isolation_level = None
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            con.execute(RUN_DDL.replace("IF NOT EXISTS run_metrics", "run_metrics_v2"))
+            con.execute(f"INSERT INTO run_metrics_v2 ({old}, source, report_sha16, outcome, fail_stage, fail_code, attempt, "
+                        f"kind, boundary, day, time_text, launch_ts, launch_delay_s, uac_wait_s, hitl_wait_s, retro_conflict) "
+                        f"SELECT {old}, 'backfill_text_b15', NULL, CASE signal WHEN 1 THEN 'GREEN' WHEN 3 THEN 'ASK' "
+                        f"WHEN 5 THEN 'MANUAL' ELSE 'RED' END, NULL, NULL, (SELECT count(*) FROM run_metrics o WHERE "
+                        f"o.task = r.task AND o.block = r.block AND substr(o.started_at, 1, 10) = substr(r.started_at, 1, 10) "
+                        f"AND o.started_at < r.started_at) + 1, 'block_run', NULL, substr(r.started_at, 1, 10), NULL, NULL, NULL, NULL, NULL, NULL "
+                        f"FROM run_metrics r")
+            n1 = con.execute("SELECT count(*) FROM run_metrics_v2").fetchone()[0]
+            if n1 != n0:
+                raise RuntimeError(f"перенос: строк {n1}, было {n0}")
+            con.execute("DROP TABLE run_metrics")
+            con.execute("ALTER TABLE run_metrics_v2 RENAME TO run_metrics")
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+        return {"migrated": True, "schema": run_schema(con), "rows": n0, "backup": bpath.name, "backup_rows": nb}
+    finally:
+        con.close()
 
 
 def _dir_key(qdir: Path) -> str:
@@ -254,8 +365,56 @@ def dips(series: list, k: float = DEFAULT_K) -> list:
     return [i for i, x in enumerate(series) if x < med - k * scale]
 
 
-def run_id(task: str, block: str, started_at: str) -> str:
-    return str(uuid.uuid5(NAMESPACE, sha256_hex(canonical({"run": [task, block, started_at]}))))
+# направление «плохо» по ряду -- ЕДИНСТВЕННОЕ место; порядок не важен (шаблоны не пересекаются)
+DIRECTIONS = (
+    (re.compile(r"^(files|bytes)$|^cat\.[a-z_]+\.(files|bytes)$"), "down"),          # спад карантина (B12)
+    (re.compile(r"^run\.(count|green|green_pct|clean_pct)$"), "down"),
+    (re.compile(r"^run\.(duration_s|steps|rollbacks|uac|hitl|parse_errors|net_errors|flaky|red|rollback|stop|ask"
+                r"|manual|not_started|incident|launch_delay_s|uac_wait_s|hitl_wait_s)$"), "up"),
+    (re.compile(r"^(dist|dist_kind|run_bnd)\.[a-z][a-z0-9_]{0,31}$"), "up"),          # искажения и стыки
+)
+
+
+def direction(key: str) -> Optional[str]:
+    """'up' (плохо = рост), 'down' (плохо = падение) или None (ряд без направления)."""
+    for rx, d in DIRECTIONS:
+        if rx.match(key):
+            return d
+    return None
+
+
+def anomalies(series: list, dirn: str, k: float = DEFAULT_K) -> tuple:
+    """(индексы точек, число известных). None пропускается; < 3 известных -- ([], n). Масштаб -- как в dips()."""
+    known = [x for x in series if x is not None]
+    if len(known) < 3 or dirn not in ("up", "down"):
+        return [], len(known)
+    med = statistics.median(known)
+    mad = statistics.median(abs(x - med) for x in known)
+    scale = mad if mad > 0 else max(1.0, 0.05 * abs(med))
+    if dirn == "down":
+        return [i for i, x in enumerate(series) if x is not None and x < med - k * scale], len(known)
+    return [i for i, x in enumerate(series) if x is not None and x > med + k * scale], len(known)
+
+
+def run_id(task: str, block: str, started_at: str, salt: Optional[str] = None) -> str:
+    """Без соли -- как в B15 (одна запись на задачу+блок+время старта); с солью -- своя строка на каждый запуск."""
+    if salt is None:
+        return str(uuid.uuid5(NAMESPACE, sha256_hex(canonical({"run": [task, block, started_at]}))))
+    return str(uuid.uuid5(NAMESPACE, sha256_hex(canonical({"run": [task, block, started_at], "salt": salt}))))
+
+
+def validate_outcome(outcome, signal: int, fail_stage, fail_code) -> tuple:
+    """outcome согласован с signal; у GREEN fail_stage / fail_code = None; коды -- машинные, без текста."""
+    outcome = SIGNAL_OUTCOME[signal] if outcome is None else str(outcome)
+    if outcome not in OUTCOMES or OUTCOMES[outcome] != signal:
+        raise ValueError(f"outcome: {outcome} не согласован с signal {signal}")
+    if outcome == "GREEN" and (fail_stage is not None or fail_code is not None):
+        raise ValueError("outcome GREEN: fail_stage / fail_code -- NULL")
+    if fail_stage is not None and not _STAGE_RE.match(str(fail_stage)):
+        raise ValueError("fail_stage: [A-Za-z0-9_./-] до 24 знаков")
+    if fail_code is not None and not _CODE_RE.match(str(fail_code)):
+        raise ValueError("fail_code: код [a-z][a-z0-9_] до 32 знаков")
+    return outcome, fail_stage, fail_code
 
 
 def _norm_time(v, name: str) -> str:
@@ -266,8 +425,9 @@ def _norm_time(v, name: str) -> str:
     return t.replace(tzinfo=None, microsecond=0).isoformat()
 
 
-def validate_run(rec: dict) -> tuple:
-    """Проверка записи прогона -> (task, block, started_at, ended_at, duration_s, {счётчики}, signal); иначе ValueError."""
+def validate_run(rec: dict, allow_null: bool = False) -> tuple:
+    """Проверка записи прогона -> (task, block, started_at, ended_at, duration_s, {счётчики}, signal); иначе ValueError.
+    allow_null (только дозапись): счётчик None = не выведен из машинных строк; иначе каждый счётчик -- целое >= 0."""
     task, block = str(rec.get("task", "")), str(rec.get("block", ""))
     if not _TASK_RE.match(task):
         raise ValueError("task: код задачи вида B15")
@@ -280,6 +440,9 @@ def validate_run(rec: dict) -> tuple:
     vals = {}
     for k in RUN_COUNTS:
         v = rec.get(k, 0)
+        if v is None and allow_null:
+            vals[k] = None
+            continue
         if isinstance(v, bool) or not isinstance(v, int) or v < 0:
             raise ValueError(f"{k}: целое >= 0")
         vals[k] = v
@@ -289,54 +452,195 @@ def validate_run(rec: dict) -> tuple:
     return task, block, st, en, dur, vals, sig
 
 
-def record_run(rec: dict, db: Optional[Path] = None, now: Optional[dt.datetime] = None) -> dict:
+def record_run(rec: dict, db: Optional[Path] = None, now: Optional[dt.datetime] = None, source: str = "block",
+               report_sha16: Optional[str] = None, outcome: Optional[str] = None, fail_stage: Optional[str] = None,
+               fail_code: Optional[str] = None, salt: Optional[str] = None, launch_ts: Optional[str] = None,
+               waits: Optional[dict] = None) -> dict:
     """Одна строка run_metrics (только числа + коды задачи/блока). run_id = uuid5(task, block, started_at):
-    повтор той же записи -- та же строка (new=False). Неверное поле -> ValueError, ничего не пишется."""
+    повтор той же записи -- та же строка (new=False). Неверное поле -> ValueError, ничего не пишется.
+    source: block (счётчик None -- только при исходе не GREEN: упал до сбора) или backfill* (None допустим).
+    outcome по умолчанию -- из signal; attempt = 1 + число строк той же задачи+блока за те же сутки, начатых раньше.
+    salt (соль запуска) -> своя run_id на каждый запуск. База v1 -> SchemaError."""
     now = now or dt.datetime.now()
-    task, block, st, en, dur, vals, sig = validate_run(rec)
-    rid = run_id(task, block, st)
+    if source not in RUN_SOURCES:
+        raise ValueError(f"source: одно из {RUN_SOURCES}")
+    if report_sha16 is not None and not _SHA16_RE.match(str(report_sha16)):
+        raise ValueError("report_sha16: 16 строчных шестнадцатеричных знаков")
+    if salt is not None and not _SALT_RE.match(str(salt)):
+        raise ValueError("salt: 8..64 строчных шестнадцатеричных знаков")
+    task, block, st, en, dur, vals, sig = validate_run(rec, allow_null=True)
+    outcome, fail_stage, fail_code = validate_outcome(outcome, sig, fail_stage, fail_code)
+    if source == "block" and outcome == "GREEN" and any(vals[k] is None for k in RUN_COUNTS):
+        raise ValueError("outcome GREEN: все счётчики -- целые (NULL только у незавершённого запуска)")
+    wv = {}
+    for k in WAITS:
+        v = (waits or {}).get(k)
+        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0 or v != v):
+            raise ValueError(f"{k}: число >= 0 или NULL")
+        wv[k] = None if v is None else round(float(v), 3)
+    lt = None if launch_ts is None else _norm_time(launch_ts, "launch_ts")
+    rid = run_id(task, block, st, salt)
     con = connect(db)
     try:
-        cur = con.execute("INSERT OR IGNORE INTO run_metrics (run_id, task, block, started_at, ended_at, duration_s, "
-                          + ", ".join(RUN_COUNTS) + ", signal, recorded_at) VALUES (" + ", ".join("?" * (8 + len(RUN_COUNTS))) + ")",
-                          (rid, task, block, st, en, dur, *[vals[k] for k in RUN_COUNTS], sig,
-                           now.isoformat(timespec="seconds")))
-        con.commit()
-        new = cur.rowcount == 1
+        if run_schema(con) != RUN_SCHEMA:
+            raise SchemaError("run_metrics: схема v1 -- сначала migrate")
+        con.isolation_level = None
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            row = con.execute("SELECT attempt FROM run_metrics WHERE run_id = ?", (rid,)).fetchone()
+            if row is not None:
+                att, new = row[0], False                     # строка этого запуска уже есть -- не перезаписывается
+            else:
+                att = 1 + con.execute("SELECT count(*) FROM run_metrics WHERE task = ? AND block = ? AND "
+                                      "day = ? AND started_at <= ? AND signal IS NOT NULL",   # <=: два запуска в одну секунду
+                                      (task, block, st[:10], st)).fetchone()[0]
+                con.execute("INSERT INTO run_metrics (" + ", ".join(RUN_COLS) + ") VALUES ("
+                            + ", ".join("?" * len(RUN_COLS)) + ")",
+                            (rid, task, block, st, en, dur, *[vals[k] for k in RUN_COUNTS], sig,
+                             now.isoformat(timespec="seconds"), source, report_sha16, outcome, fail_stage, fail_code,
+                             att, "block_run", None, st[:10], None, lt, *[wv[k] for k in WAITS], None))
+                new = True
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
     finally:
         con.close()
-    return {"run_id": rid, "new": new, "task": task, "block": block, "duration_s": dur, "signal": sig}
+    return {"run_id": rid, "new": new, "task": task, "block": block, "duration_s": dur, "signal": sig,
+            "outcome": outcome, "attempt": att}
+
+
+def read_run(rid: str, db: Optional[Path] = None) -> Optional[dict]:
+    """Строка run_metrics по run_id -- новым соединением (без создания таблиц и без записи); None -- нет строки."""
+    db = Path(db or default_db())
+    if not db.is_file():
+        return None
+    con = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        if run_schema(con) != RUN_SCHEMA:
+            return None
+        row = con.execute("SELECT " + ", ".join(RUN_COLS) + " FROM run_metrics WHERE run_id = ?", (rid,)).fetchone()
+    finally:
+        con.close()
+    return dict(zip(RUN_COLS, row)) if row else None
 
 
 def _run_series(con: sqlite3.Connection, start: dt.date, end: dt.date) -> dict:
-    """{day: {run.<метрика>: число}} по прогонам, начатым в окне. Спад деградации виден в процентах:
-    run.green_pct -- доля прогонов с сигналом 1, run.clean_pct -- доля прогонов без откатов, FLAKY, ошибок разбора
-    и сети (0..100; в процентах, чтобы нижняя граница масштаба 1 правила k * MAD не гасила долю)."""
-    rows = con.execute("SELECT substr(started_at, 1, 10), duration_s, " + ", ".join(RUN_COUNTS) + ", signal "
-                       "FROM run_metrics WHERE substr(started_at, 1, 10) >= ? AND substr(started_at, 1, 10) <= ?",
+    """{day: {run.<метрика>: число | None}} по прогонам, начатым в окне. run.green_pct -- доля прогонов с сигналом 1,
+    run.clean_pct -- доля прогонов без откатов, FLAKY, ошибок разбора и сети (0..100); run.green / red / rollback /
+    stop / ask / manual -- число прогонов по исходу. Счётчик суток = None, если хоть у одной строки суток он NULL
+    (частичная сумма -- не число суток); clean_pct -- по строкам с известными четырьмя полями, нет таких -- None."""
+    oc = "outcome" if run_schema(con) == RUN_SCHEMA else (
+        "CASE signal WHEN 1 THEN 'GREEN' WHEN 3 THEN 'ASK' WHEN 5 THEN 'MANUAL' ELSE 'RED' END")
+    v2 = run_schema(con) == RUN_SCHEMA
+    dcol = "day" if v2 else "substr(started_at, 1, 10)"
+    flt = " AND kind = 'block_run' AND signal IS NOT NULL" if v2 else ""
+    wsel = ", ".join(WAITS) if v2 else ", ".join("NULL" for _ in WAITS)
+    rows = con.execute(f"SELECT {dcol}, duration_s, " + ", ".join(RUN_COUNTS) + f", {wsel}, signal, {oc} "
+                       f"FROM run_metrics WHERE {dcol} >= ? AND {dcol} <= ?{flt}",
                        (start.isoformat(), end.isoformat())).fetchall()
     by = {}
+    extra = {}
+    measured = set()                                     # ряды ожиданий -- только если в окне есть хоть одно измерение
+    if v2:   # не запущенные блоки, инциденты и стыки (ряды стыков -- по всем строкам)
+        for day, kind, outc, bnd in con.execute("SELECT day, kind, outcome, boundary FROM run_metrics WHERE day >= ? "
+                                                "AND day <= ?", (start.isoformat(), end.isoformat())):
+            e = extra.setdefault(day, {})                            # только встреченные ключи: без таких строк
+            if kind == "block_run" and outc == "NOT_STARTED":            # недельный слепок прежний
+                e["run.not_started"] = e.get("run.not_started", 0.0) + 1
+            if kind == "incident":
+                e["run.incident"] = e.get("run.incident", 0.0) + 1
+            if bnd:
+                e[f"run_bnd.{bnd}"] = e.get(f"run_bnd.{bnd}", 0.0) + 1
     for r in rows:
-        m = by.setdefault(r[0], {"run.count": 0.0, "run.duration_s": 0.0, "run.green": 0.0, "run.clean": 0.0,
-                                 **{f"run.{k}": 0.0 for k in RUN_COUNTS}})
+        m = by.setdefault(r[0], {"run.count": 0.0, "run.duration_s": 0.0, **{f"run.{k}": 0.0 for k in RUN_COUNTS},
+                                 **{f"run.{o}": 0.0 for o in ("green", "red", "rollback", "stop", "ask", "manual")},
+                                 "_g": 0.0, "_c": 0.0, "_ck": 0.0})
         m["run.count"] += 1
-        m["run.duration_s"] += float(r[1])
-        for i, k in enumerate(RUN_COUNTS):
-            m[f"run.{k}"] += float(r[2 + i])
-        m["run.green"] += 1.0 if r[-1] == 1 else 0.0
+        if m["run.duration_s"] is None or r[1] is None:          # ретро-строка без времени -> длительность суток
+            m["run.duration_s"] = None                             # неизвестна (нет данных), не 0
+        else:
+            m["run.duration_s"] += float(r[1])
         d = dict(zip(RUN_COUNTS, r[2:2 + len(RUN_COUNTS)]))
-        m["run.clean"] += 1.0 if not (d["rollbacks"] or d["flaky"] or d["parse_errors"] or d["net_errors"]) else 0.0
+        wd = dict(zip(WAITS, r[2 + len(RUN_COUNTS):2 + len(RUN_COUNTS) + len(WAITS)]))
+        if v2:
+            for k in WAITS:                                     # сумма ожиданий суток; NULL у строки -> нет данных
+                key = f"run.{k}"
+                if key not in m:
+                    m[key] = 0.0
+                m[key] = None if (m[key] is None or wd[k] is None) else m[key] + float(wd[k])
+                if wd[k] is not None:
+                    measured.add(key)
+        for k in RUN_COUNTS:
+            if m[f"run.{k}"] is None or d[k] is None:
+                m[f"run.{k}"] = None
+            else:
+                m[f"run.{k}"] += float(d[k])
+        m["_g"] += 1.0 if r[-2] == 1 else 0.0
+        m[f"run.{str(r[-1]).lower()}"] = m.get(f"run.{str(r[-1]).lower()}", 0.0) + 1.0
+        four = [d[k] for k in ("rollbacks", "flaky", "parse_errors", "net_errors")]
+        if all(v is not None for v in four):
+            m["_ck"] += 1.0
+            m["_c"] += 1.0 if not any(four) else 0.0
     for m in by.values():
-        m["run.green_pct"] = round(100.0 * m.pop("run.green") / m["run.count"], 3)
-        m["run.clean_pct"] = round(100.0 * m.pop("run.clean") / m["run.count"], 3)
+        for key in [f"run.{k}" for k in WAITS]:
+            if key not in measured:
+                m.pop(key, None)                         # не измерялось нигде в окне -- ряда нет (слепок прежний)
+        g, c, ck = m.pop("_g"), m.pop("_c"), m.pop("_ck")
+        m["run.green_pct"] = round(100.0 * g / m["run.count"], 3)
+        m["run.clean_pct"] = round(100.0 * c / ck, 3) if ck else None
+    runkeys = ["run.count", "run.duration_s", "run.green_pct", "run.clean_pct"] + [f"run.{k}" for k in RUN_COUNTS + WAITS] + [
+        f"run.{o}" for o in ("green", "red", "rollback", "stop", "ask", "manual")]
+    for day, e in extra.items():
+        if e:
+            by.setdefault(day, {k: None for k in runkeys if not k.endswith("_s") or k == "run.duration_s"
+                                or k in measured}).update(e)   # сутки без запусков: ряды блоков -- нет данных
     return by
 
 
+def _dist_series(dist_dir: Optional[Path], start: dt.date, end: dt.date) -> tuple:
+    """({day: {dist.<стык>: число}}, пропущено файлов) из distortions_YYYY-MM-DD.json окна (поле by_boundary)."""
+    by, bad = {}, 0
+    if dist_dir is None or not Path(dist_dir).is_dir():
+        return by, bad
+    for p in sorted(Path(dist_dir).iterdir()):
+        m = _DIST_RE.match(p.name)
+        if not m or not p.is_file():
+            continue
+        try:
+            day = dt.date.fromisoformat(m.group(1))
+        except ValueError:
+            bad += 1
+            continue
+        if not start <= day <= end:
+            continue
+        try:
+            obj = json.loads(p.read_text(encoding="utf-8"))
+            bb = obj.get("by_boundary") if isinstance(obj, dict) else None
+            if obj.get("day") != day.isoformat() or not isinstance(bb, dict):
+                raise ValueError("day / by_boundary")
+            sr = obj.get("series", {})
+            if not isinstance(sr, dict):
+                raise ValueError("series")
+            row = {}
+            for pre, src in (("dist", bb), ("dist_kind", sr)):
+                for key, v in src.items():
+                    if not _DIST_KEY_RE.match(str(key)) or isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                        raise ValueError("by_boundary / series: код [a-z0-9_] -> целое >= 0")
+                    row[f"{pre}.{key}"] = float(v)
+        except (ValueError, OSError, AttributeError):
+            bad += 1
+            continue
+        by[day.isoformat()] = row
+    return by, bad
+
+
 def weekly(db: Optional[Path] = None, end_day: Optional[str] = None, k: float = DEFAULT_K,
-           now: Optional[dt.datetime] = None) -> dict:
+           now: Optional[dt.datetime] = None, dist_dir: Optional[Path] = None) -> dict:
     now = now or dt.datetime.now()
     end = dt.date.fromisoformat(end_day) if end_day else now.date()
     start = end - dt.timedelta(days=WEEK_DAYS - 1)
+    dist_dir = Path(dist_dir) if dist_dir is not None else Path(db or default_db()).parent
     con = connect(db)
     try:
         rows = con.execute("SELECT daily_uuid, day, aggregate_json, created_at FROM quarantine_state_snapshots "
@@ -345,14 +649,33 @@ def weekly(db: Optional[Path] = None, end_day: Optional[str] = None, k: float = 
         for du, day, aj, ca in rows:
             last[day] = (du, json.loads(aj))          # последний слепок суток
         runs = _run_series(con, start, end)
-        days = sorted(set(last) | set(runs))
+        dist, dist_bad = _dist_series(dist_dir, start, end)
+        days = sorted(set(last) | set(runs) | set(dist))
         daily = [last[d][0] if d in last else None for d in days]
-        mets = [dict(_metrics(last[d][1]) if d in last else {}, **runs.get(d, {})) for d in days]
-        keys = sorted({k_ for m in mets for k_ in m})
-        series = {key: [m.get(key, 0.0) for m in mets] for key in keys}
-        dip = {}
+        quar = [_metrics(last[d][1]) if d in last else None for d in days]
+        rser = [runs.get(d) for d in days]
+        dser = [dist.get(d) for d in days]
+        keys = sorted({k_ for grp in (quar, rser, dser) for m in grp if m for k_ in m})
+
+        def val(key: str, i: int):
+            # источник ряда: сутки есть в источнике -> отсутствующий ключ = 0 (категории нет / стык не встречен);
+            # суток нет в источнике -> None (нет данных)
+            grp = rser if key.startswith(("run.", "run_bnd.")) else dser if key.startswith("dist") else quar
+            m = grp[i]
+            return None if m is None else m.get(key, 0.0)
+
+        series = {key: [val(key, i) for i in range(len(days))] for key in keys}
+        dip, known, insufficient, undirected = {}, {}, [], []
         for key, s in series.items():
-            for i in dips(s, k):
+            dn = direction(key)
+            if dn is None:
+                undirected.append(key)
+                known[key] = sum(1 for x in s if x is not None)
+                continue
+            idx, known[key] = anomalies(s, dn, k)
+            if known[key] < 3:
+                insufficient.append(key)
+            for i in idx:
                 dip.setdefault(days[i], []).append(key)
         agg = {"days": days, "series": series, "k": k}
         wh = sha256_hex(canonical({"daily": daily, "aggregate": agg}))
@@ -365,7 +688,9 @@ def weekly(db: Optional[Path] = None, end_day: Optional[str] = None, k: float = 
         con.commit()
     finally:
         con.close()
-    return {"weekly_uuid": wu, "n_days": len(days), "partial": partial, "daily_uuids": daily, "dips": dip}
+    return {"weekly_uuid": wu, "n_days": len(days), "partial": partial, "daily_uuids": daily, "dips": dip,
+            "dist_days": len(dist), "dist_skipped": dist_bad, "known": known, "insufficient": insufficient,
+            "undirected": undirected}
 
 
 def zoom(weekly_uuid: str, db: Optional[Path] = None) -> dict:
@@ -386,13 +711,140 @@ def zoom(weekly_uuid: str, db: Optional[Path] = None) -> dict:
             nodes = []
             for key in dip[day]:
                 s = agg["series"][key]
-                med = statistics.median(s)
-                nodes.append({"metric": key, "value": s[i], "median": med, "delta": s[i] - med})
+                med = statistics.median([x for x in s if x is not None])
+                nodes.append({"metric": key, "value": s[i], "median": med, "delta": s[i] - med,
+                              "direction": direction(key)})
             points.append({"day": day, "daily_uuid": du, "nodes": nodes,
                            "aggregate": json.loads(row[0]) if row else None})
         return {"weekly_uuid": weekly_uuid, "found": True, "k": k, "points": points}
     finally:
         con.close()
+
+
+def _retro_row(ev: dict, i: int) -> dict:
+    """Событие ретро-разбора -> поля строки; ValueError с причиной. Ничего не выдумывается: неточное время ->
+    started_at NULL (время -- как есть в time_text); нет attempt -> NULL; текст note / source_ref не хранится
+    (в report_sha16 -- sha16 канонического события, след к исходному файлу)."""
+    if not isinstance(ev, dict):
+        raise ValueError("событие -- объект")
+    if ev.get("source") != RETRO:
+        raise ValueError("source: retro_audit")
+    day = dt.date.fromisoformat(str(ev.get("day"))).isoformat()
+    tt = str(ev.get("time") or "").strip()
+    if not tt or len(tt) > 16 or "\n" in tt:
+        raise ValueError("time: строка до 16 знаков")
+    task = str(ev.get("block") or "")                       # в событии block = код задачи / источник (B18a, X_SRC)
+    blk = str(ev.get("task") or "")                         # task = имя скрипта / действия (run, elevated, write)
+    blk = BLOCK_ALIASES.get(blk, blk)
+    kind = "block_run" if _TASK_RE.match(task) else "incident"
+    if kind == "incident" and not _TASKCODE_RE.match(task):
+        raise ValueError("block: код источника [A-Za-z0-9_?] до 16")
+    if not _BLOCK_RE.match(blk):
+        raise ValueError("task: [a-z][a-z0-9_] до 24")
+    oc = str(ev.get("outcome") or "")
+    allowed = set(OUTCOMES) if kind == "block_run" else set(INCIDENT_OUTCOMES) | {"NOT_STARTED"}
+    if oc not in allowed:
+        raise ValueError(f"outcome {oc} не для {kind}")
+    if oc == "GREEN":
+        raise ValueError("outcome GREEN в ретро-разборе сбоев не ожидается")
+    fc, bnd, att = ev.get("fail_code"), ev.get("boundary"), ev.get("attempt")
+    if fc is not None and not _CODE_RE.match(str(fc)):
+        raise ValueError("fail_code: код [a-z][a-z0-9_]")
+    if bnd is not None and not _BOUNDARY_RE.match(str(bnd)):
+        raise ValueError("boundary: код [a-z][a-z0-9_]")
+    if att is not None and (isinstance(att, bool) or not isinstance(att, int) or att < 1):
+        raise ValueError("attempt: целое >= 1 или null")
+    m = _EXACT_TIME_RE.match(tt)
+    st = f"{day}T{m.group(1)}:{m.group(2)}:00" if m else None
+    sig = OUTCOMES.get(oc) if kind == "block_run" and oc != "NOT_STARTED" else None
+    canon = {k: ev.get(k) for k in ("day", "time", "block", "task", "outcome", "fail_code", "boundary", "attempt",
+                                    "source_ref")}
+    h = sha256_hex(canonical(canon))
+    return {"run_id": str(uuid.uuid5(NAMESPACE, sha256_hex(canonical({"retro": h})))), "task": task, "block": blk,
+            "kind": kind, "day": day, "time_text": tt, "started_at": st, "outcome": oc, "signal": sig,
+            "fail_code": fc, "boundary": bnd, "attempt": att, "report_sha16": h[:16], "index": i}
+
+
+def _time_fits(tt: str, st: Optional[str], en: Optional[str]) -> bool:
+    """Точное HH:MM -- внутри [start - 1 мин, end + 1 мин] запуска; HH:Mx -- тот же час и десяток минут;
+    ~HH:xx -- тот же час; прочее («утро») -- время не сверяется."""
+    if not st:
+        return False
+    m = _EXACT_TIME_RE.match(tt)
+    t0 = dt.datetime.fromisoformat(st)
+    if m:
+        x = t0.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0)
+        t1 = dt.datetime.fromisoformat(en) if en else t0
+        return t0 - dt.timedelta(minutes=1) <= x <= t1 + dt.timedelta(minutes=1)
+    m = re.match(r"^~?([01][0-9]|2[0-3]):([0-5])x$", tt)
+    if m:
+        return t0.hour == int(m.group(1)) and t0.minute // 10 == int(m.group(2))
+    m = re.match(r"^~?([01][0-9]|2[0-3]):xx$", tt)
+    if m:
+        return t0.hour == int(m.group(1))
+    return True
+
+
+def import_retro(events: list, db: Optional[Path] = None, now: Optional[dt.datetime] = None) -> dict:
+    """Ретро-разбор -> run_metrics. Событие запуска блока (kind block_run), совпавшее с уже записанной строкой
+    дозаписи (тот же день + код задачи + блок + attempt, время запуска подходит, строка не GREEN), не дублируется:
+    у неё дополняются fail_code / fail_stage / boundary, где NULL, source -> backfill+retro_audit; исход строки не
+    меняется (машинная строка отчёта первична; расхождение -> conflicts и retro_conflict = 1 у строки). Иначе -- новая строка (source retro_audit).
+    Повтор импорта ничего не дублирует. -> {inserted, matched, rejected: [{index, reason}], conflicts, total}."""
+    now = now or dt.datetime.now()
+    rows, rejected = [], []
+    for i, ev in enumerate(events):
+        try:
+            rows.append(_retro_row(ev, i))
+        except (ValueError, TypeError) as e:
+            rejected.append({"index": i, "reason": str(e)})
+    con = connect(db)
+    ins = mat = new = 0
+    conflicts = []
+    try:
+        if run_schema(con) != RUN_SCHEMA:
+            raise SchemaError("run_metrics: схема v1 -- сначала migrate")
+        con.isolation_level = None
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            for r in rows:
+                if con.execute("SELECT 1 FROM run_metrics WHERE run_id = ?", (r["run_id"],)).fetchone():
+                    ins += 1                                        # уже вставлено прошлым импортом
+                    continue
+                hit = None
+                if r["kind"] == "block_run" and r["attempt"] is not None:
+                    for row in con.execute("SELECT run_id, started_at, ended_at, outcome, source, fail_code, fail_stage, "
+                                           "boundary FROM run_metrics WHERE kind = 'block_run' AND day = ? AND task = ? "
+                                           "AND block = ? AND attempt = ? AND source LIKE 'backfill%' AND signal IS NOT NULL",
+                                           (r["day"], r["task"], r["block"], r["attempt"])):
+                        if row[3] != "GREEN" and _time_fits(r["time_text"], row[1], row[2]):
+                            hit = row
+                            break
+                if hit:
+                    con.execute("UPDATE run_metrics SET fail_code = COALESCE(fail_code, ?), fail_stage = COALESCE(fail_stage, ?), "
+                                "boundary = COALESCE(boundary, ?), time_text = COALESCE(time_text, ?), "
+                                "source = 'backfill+retro_audit' WHERE run_id = ?",
+                                (r["fail_code"], None, r["boundary"], r["time_text"], hit[0]))
+                    mat += 1
+                    if hit[3] != r["outcome"]:          # исход отчёта блока первичен; расхождение видно в данных
+                        con.execute("UPDATE run_metrics SET retro_conflict = 1 WHERE run_id = ?", (hit[0],))
+                        conflicts.append({"index": r["index"], "row_outcome": hit[3], "retro_outcome": r["outcome"]})
+                    continue
+                con.execute("INSERT INTO run_metrics (" + ", ".join(RUN_COLS) + ") VALUES (" + ", ".join("?" * len(RUN_COLS))
+                            + ")", (r["run_id"], r["task"], r["block"], r["started_at"], None, None,
+                                    *[None] * len(RUN_COUNTS), r["signal"], now.isoformat(timespec="seconds"), RETRO,
+                                    r["report_sha16"], r["outcome"], None, r["fail_code"], r["attempt"], r["kind"],
+                                    r["boundary"], r["day"], r["time_text"], None, None, None, None, None))
+                ins += 1
+                new += 1
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+    finally:
+        con.close()
+    return {"total": len(events), "inserted": ins, "new_rows": new, "matched": mat, "rejected": rejected,
+            "conflicts": conflicts}
 
 
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
