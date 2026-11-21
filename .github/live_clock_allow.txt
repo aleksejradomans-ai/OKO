@@ -1,0 +1,39 @@
+# Exceptions of the live-clock guard (src/clock_guard.py, test src/test_clock_guard_b30.py).
+# <path>::<function> | <calls> | <reason> | <date>. More calls than listed -> red; a line without a violation -> red (stale).
+# Lines of files that are not in the tree are ignored. Inventory of 2026-11-21: every existing call, none fixed in this block.
+scripts/test_rag_pipeline.py::<module> | 1 | manual RAG script: unique marker from the clock (not a value check) | 2026-11-21
+scripts/test_retriever_path.py::<module> | 2 | manual RAG script: unique marker from the clock (not a value check) | 2026-11-21
+src/ipp_print_test.py::main | 2 | manual hardware script (*_test.py, no test function): pacing of a live device check | 2026-11-21
+src/st_pause_test.py::main | 2 | manual hardware script (*_test.py, no test function): pacing of a live device check | 2026-11-21
+src/st_power_test.py::_act | 3 | manual hardware script (*_test.py, no test function): pacing of a live device check | 2026-11-21
+src/test_amb_lamps.py::_wait | 2 | bounded wait / elapsed-time measurement (monotonic delta, upper bound only; no date or wall-clock value is checked) | 2026-11-21
+src/test_amb_lamps.py::test_frame_rate_capped_latest_wins | 2 | bounded wait / elapsed-time measurement (monotonic delta, upper bound only; no date or wall-clock value is checked) | 2026-11-21
+src/test_amb_lamps.py::test_never_confirmed_goes_dp24_and_retries_dp28 | 2 | bounded wait / elapsed-time measurement (monotonic delta, upper bound only; no date or wall-clock value is checked) | 2026-11-21
+src/test_amb_music.py::_bridge_at.spawn | 2 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_amb_music.py::_fake_bridge.spawn | 2 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_amb_music.py::_run_bridge | 2 | bounded wait / elapsed-time measurement (monotonic delta, upper bound only; no date or wall-clock value is checked) | 2026-11-21
+src/test_amb_music.py::test_bridge_survives_status_and_control_races | 3 | bounded wait / elapsed-time measurement (monotonic delta, upper bound only; no date or wall-clock value is checked) | 2026-11-21
+src/test_amb_music.py::test_start_running_updates_live_no_spawn | 1 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_amb_music.py::test_stop_waits_for_bridge | 1 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_device_watch.py::test_oauth_network_uses_still_alive_access | 2 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_doc_intake.py::test_purge_old | 1 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_epoch.py::test_new_epoch_hides_old_keeps_journal | 1 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_force_model.py::forced | 1 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_game_mode.py::TestBrainMode.test_expired_force_sleeps | 1 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_game_mode.py::TestBrainMode.test_force_in_game | 1 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_game_mode.py::TestBrainMode.test_force_without_game_is_awake | 1 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_game_mode.py::TestForceFlag.test_write_read_clear | 2 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_game_mode.py::TestGovernor.test_force_cpu_sets_num_gpu | 1 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_game_mode.py::TestGovernor.test_force_gpu_default_no_num_gpu | 1 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_game_mode.py::_touch | 1 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_memory_r1.py::test_ttl_removes_only_old | 1 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_qfix.py::test_quote_strip_is_linear | 2 | bounded wait / elapsed-time measurement (monotonic delta, upper bound only; no date or wall-clock value is checked) | 2026-11-21
+src/test_quarantine_state.py::test_cli_snapshot_and_purge_json | 1 | CLI computes the age from the real now (subprocess; cannot be frozen from the test) | 2026-11-21
+src/test_shell_window_b18c.py::_pump | 2 | bounded wait / elapsed-time measurement (monotonic delta, upper bound only; no date or wall-clock value is checked) | 2026-11-21
+src/test_shell_window_b18c.py::live_channel | 2 | bounded wait / elapsed-time measurement (monotonic delta, upper bound only; no date or wall-clock value is checked) | 2026-11-21
+src/test_sleep_job.py::sleep_env | 1 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_sleep_job.py::test_rag_hygiene_not_run_when_sleep_skipped | 1 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_sleep_job.py::test_recent_activity_skips | 1 | relative to the live clock read by the code under test (offset of seconds..days from now; freezing needs a clock seam in the module -- backlog) | 2026-11-21
+src/test_st_loopback.py::test_timeout_closes_listener | 2 | elapsed time by the wall clock (time.time delta, upper bound only): a clock jump can flake it; candidate for time.monotonic -- backlog | 2026-11-21
+src/test_stt_concurrency.py::test_transcribe_lock_wait_is_bounded | 2 | elapsed time by the wall clock (time.time delta, upper bound only): a clock jump can flake it; candidate for time.monotonic -- backlog | 2026-11-21
+src/test_watcher_startup.py::_wait | 2 | elapsed time by the wall clock (time.time delta, upper bound only): a clock jump can flake it; candidate for time.monotonic -- backlog | 2026-11-21

@@ -13,6 +13,10 @@
      записи пишутся по порядку списка -- attempt считается по уже записанным)
   python tools/quarantine_state_cli.py migrate --backup-dir DIR [--db P]
     (run_metrics v1 -> v2: копия базы в DIR, затем перенос в одной транзакции; на v2 -- ничего)
+  python tools/quarantine_state_cli.py migrate-attempts --backup-dir DIR [--db P]
+    (B30: сквозная нумерация попыток существующих строк: копия базы в DIR, затем одна транзакция; повтор -- ничего)
+  python tools/quarantine_state_cli.py ghost [--db P] [--days 7]
+    (B30: «призрак» -- лучший подтверждённый GREEN по виду запуска за N суток; только цифры)
   python tools/quarantine_state_cli.py read-run <run_id> [--db P]
   python tools/quarantine_state_cli.py import-retro <events.json> [--db P]
     (ретро-разбор: список событий source=retro_audit; совпавшие с дозаписью дополняются, прочие -- новые строки;
@@ -54,6 +58,10 @@ def main(argv=None) -> int:
     rr.add_argument("--source", default="block", choices=("block", "backfill"))
     mg = sub.add_parser("migrate")
     mg.add_argument("--backup-dir", required=True)
+    ma = sub.add_parser("migrate-attempts")
+    ma.add_argument("--backup-dir", required=True)
+    gh = sub.add_parser("ghost")
+    gh.add_argument("--days", type=int, default=qs.GHOST_DAYS)
     rd = sub.add_parser("read-run")
     rd.add_argument("run_id")
     ir = sub.add_parser("import-retro")
@@ -100,6 +108,14 @@ def main(argv=None) -> int:
              "run_ids": [x["run_id"] for x in res], "attempts_max": max([x["attempt"] for x in res] or [0])}
     elif a.cmd == "migrate":
         r = dict(qs.migrate_run_metrics(db, Path(a.backup_dir)), cmd="migrate")
+    elif a.cmd == "migrate-attempts":
+        try:
+            r = dict(qs.migrate_attempts(db, Path(a.backup_dir)), cmd="migrate-attempts")
+        except qs.SchemaError as e:
+            sys.stdout.buffer.write((json.dumps({"cmd": "migrate-attempts", "error": str(e)}, ensure_ascii=False) + "\n").encode("utf-8"))
+            return 3
+    elif a.cmd == "ghost":
+        r = {"cmd": "ghost", "ghost": qs.ghost(db, days=a.days)}
     elif a.cmd == "import-retro":
         evs = json.loads(Path(a.json).read_text(encoding="utf-8-sig"))
         if not isinstance(evs, list):

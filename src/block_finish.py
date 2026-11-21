@@ -22,6 +22,9 @@ attempt (номер попытки задача+блок за сутки) счи
 (source = block) записана И прочитана назад новым соединением с теми же полями. Иначе при signal_wanted = 1 ->
 `SIGNAL: 3 - ASK; metrics_not_recorded (<причина>)`. RED / ASK / MANUAL не меняются (запись для них тоже
 обязательна, её сбой отмечается в причине, но зелёным итог не становится). Неразборчивый signal_wanted -> RED.
+После записи (B30 P7) -- строка «призрака» GHOST: лучший подтверждённый GREEN того же вида запуска за 7 суток и
+сравнение этого запуска (только цифры, на итог не влияет). attempt -- сквозной номер по времени внутри (day, task, block)
+по всем источникам (quarantine_state, B30 P6).
 Повтор с теми же строками -- та же строка run_metrics (run_id детерминирован), итог тот же; та же запись с другими
 полями -> расхождение -> не GREEN. Только стандартная библиотека и quarantine_state."""
 from __future__ import annotations
@@ -157,5 +160,37 @@ def finish(lines: Iterable[str], db: Optional[Path] = None, now: Optional[dt.dat
         why = "metrics_recorded" if recorded else "metrics_not_recorded"
     tail = f"run_id={rid} attempt={exp.get('attempt')}" if recorded else f"({reason})"
     line = f"SIGNAL: {sig} - {NAMES[sig]}; {why} {tail}".rstrip()
+    gh = ghost_line(rid, exp.get("block"), db, now) if recorded else None
     return {"signal": sig, "status": NAMES[sig], "recorded": recorded, "reason": reason, "run_id": rid, "new": new,
-            "attempt": exp.get("attempt") if recorded else None, "outcome": exp.get("outcome"), "line": line}
+            "attempt": exp.get("attempt") if recorded else None, "outcome": exp.get("outcome"), "line": line,
+            "ghost": gh}
+
+
+_KIND_OF = {b: k for k, b in qs.GHOST_KINDS.items()}
+
+
+def ghost_line(rid: Optional[str], block: Optional[str], db: Optional[Path] = None,
+               now: Optional[dt.datetime] = None) -> Optional[str]:
+    """«Призрак» (B30 P7) для отчёта блока: лучший подтверждённый GREEN того же вида запуска за 7 суток и сравнение
+    этого запуска. Только цифры; сбой -> строка с error=<класс>, итог блока не меняется. Вид без эталона -> best=-."""
+    kind = _KIND_OF.get(str(block or ""))
+    if kind is None:
+        return None
+    try:
+        g = qs.ghost(db, now=now, current_run_id=rid, kinds=(kind,)).get(kind)
+    except Exception as e:                                  # отчётная строка не может сломать закрытие блока
+        return f"GHOST kind={kind} error={type(e).__name__}"
+    if not g:
+        return f"GHOST kind={kind} best=-"
+    b, c, v = g["best"], g["current"] or {}, g["vs"] or {}
+
+    def f(x):
+        return "-" if x is None else (f"{x:g}" if isinstance(x, float) else str(x))
+    if not b:
+        return (f"GHOST kind={kind} n_green_7d=0 best=- cur_duration_s={f(c.get('duration_s'))} "
+                f"cur_attempt={f(c.get('attempt'))} cur_steps={f(c.get('steps'))}")
+    return (f"GHOST kind={kind} n_green_7d={g['n_green']} best_task={b['task']} best_started={b['started_at']} "
+            f"best_duration_s={f(b['duration_s'])} best_attempt={f(b['attempt'])} best_steps={f(b['steps'])} "
+            f"cur_outcome={f(c.get('outcome'))} cur_duration_s={f(c.get('duration_s'))} cur_attempt={f(c.get('attempt'))} "
+            f"cur_steps={f(c.get('steps'))} duration={f(v.get('duration'))} delta_s={f(v.get('duration_delta_s'))} "
+            f"attempts={f(v.get('attempts'))} steps={f(v.get('steps'))}")

@@ -29,6 +29,14 @@ weekly() читает и серию искажений distortions_YYYY-MM-DD.js
 insufficient, точки не ищутся. Направление ряда -- таблица DIRECTIONS (одно место): «плохо = рост» -> всплески вверх
 (x > median + k * scale), «плохо = падение» -> провалы вниз (x < median - k * scale); ряд без направления в поиск не
 идёт и попадает в undirected (тест требует, чтобы таких не было).
+Сквозная нумерация попыток (B30): attempt = порядковый номер по времени внутри (day, task, block) по всем источникам
+(block / backfill* / retro_audit; только kind = block_run). Номер источника сохраняется в боковой таблице run_attempts
+(attempt_src -- нумерация внутри своего источника, по ней сопоставляется ретро-разбор; attempt_order = exact -- время
+запуска известно, approx -- время из time_text («23:3x» -> 23:30) или неизвестно -> после всех строк с временем, по
+порядку источника). Таблица run_metrics не меняется (код B29 читает и пишет её как раньше). Существующие строки --
+migrate_attempts(): копия базы, затем перенумерация в одной транзакции; record_run / import_retro перенумеровывают свою
+группу в той же транзакции. ghost(): «призрак» -- лучший подтверждённый GREEN за 7 суток по виду запуска (run / stage /
+promote / elevated) и сравнение текущего запуска; только цифры, ничего не блокирует.
 cycle(root): для каждого каталога root/<glob>: snapshot (идемпотентно в пределах суток), purge (dry-run -- только
 отчёт), в выбранный день недели -- weekly; одна строка-итог на каталог и итог цикла, по строке в лог-файл.
 purge(dir): каталог удаляется ТОЛЬКО если есть слепок с тем же агрегатом (пересчёт перед удалением) И возраст
@@ -97,6 +105,19 @@ RUN_DDL = """CREATE TABLE IF NOT EXISTS run_metrics (
 RUN_COLS = ("run_id", "task", "block", "started_at", "ended_at", "duration_s") + RUN_COUNTS + (
     "signal", "recorded_at", "source", "report_sha16", "outcome", "fail_stage", "fail_code", "attempt",
     "kind", "boundary", "day", "time_text", "launch_ts") + WAITS + ("retro_conflict",)
+
+
+ATTEMPT_DDL = """CREATE TABLE IF NOT EXISTS run_attempts (
+        run_id TEXT PRIMARY KEY, attempt_src INTEGER, attempt_order TEXT NOT NULL)"""
+_FAMILY = {"block": ("block",), "backfill": ("backfill", "backfill_text_b15", "backfill+retro_audit"),
+           "backfill_text_b15": ("backfill", "backfill_text_b15", "backfill+retro_audit"),
+           "backfill+retro_audit": ("backfill", "backfill_text_b15", "backfill+retro_audit"), RETRO: (RETRO,)}
+_APPROX_MIN_RE = re.compile(r"(?<![0-9])([01]?[0-9]|2[0-3]):([0-5])([0-9x])")
+_APPROX_HOUR_RE = re.compile(r"(?<![0-9])([01]?[0-9]|2[0-3]):xx")
+# виды запусков «призрака» -> имя блока в run_metrics
+GHOST_KINDS = {"run": "run", "stage": "push_stage", "promote": "push_promote", "elevated": "elevated"}
+GHOST_DAYS = 7
+GHOST_SOURCES = ("block", "backfill", "backfill+retro_audit")      # подтверждённые машинными строками
 
 
 class SchemaError(RuntimeError):
@@ -217,6 +238,7 @@ def connect(db: Optional[Path] = None) -> sqlite3.Connection:
         daily_uuids_json TEXT NOT NULL, aggregate_json TEXT NOT NULL, dips_json TEXT NOT NULL, k REAL NOT NULL,
         created_at TEXT NOT NULL)""")
     con.execute(RUN_DDL)                      # новая база -- сразу v2; существующая таблица не меняется (только migrate)
+    con.execute(ATTEMPT_DDL)                  # B30: номер попытки по источнику + отметка exact / approx
     return con
 
 
@@ -491,14 +513,19 @@ def record_run(rec: dict, db: Optional[Path] = None, now: Optional[dt.datetime] 
             if row is not None:
                 att, new = row[0], False                     # строка этого запуска уже есть -- не перезаписывается
             else:
-                att = 1 + con.execute("SELECT count(*) FROM run_metrics WHERE task = ? AND block = ? AND "
-                                      "day = ? AND started_at <= ? AND signal IS NOT NULL",   # <=: два запуска в одну секунду
-                                      (task, block, st[:10], st)).fetchone()[0]
+                fam = _FAMILY[source]                            # номер внутри своего источника (B29) -> attempt_src
+                src_att = 1 + con.execute("SELECT count(*) FROM run_metrics WHERE task = ? AND block = ? AND day = ? "
+                                          "AND started_at <= ? AND kind = 'block_run' AND source IN ("   # <=: одна секунда
+                                          + ", ".join("?" * len(fam)) + ")", (task, block, st[:10], st, *fam)).fetchone()[0]
                 con.execute("INSERT INTO run_metrics (" + ", ".join(RUN_COLS) + ") VALUES ("
                             + ", ".join("?" * len(RUN_COLS)) + ")",
                             (rid, task, block, st, en, dur, *[vals[k] for k in RUN_COUNTS], sig,
                              now.isoformat(timespec="seconds"), source, report_sha16, outcome, fail_stage, fail_code,
-                             att, "block_run", None, st[:10], None, lt, *[wv[k] for k in WAITS], None))
+                             src_att, "block_run", None, st[:10], None, lt, *[wv[k] for k in WAITS], None))
+                con.execute(ATTEMPT_DDL)
+                con.execute("INSERT OR REPLACE INTO run_attempts (run_id, attempt_src, attempt_order) VALUES (?, ?, ?)",
+                            (rid, src_att, "exact"))
+                att = _renumber_group(con, st[:10], task, block)["attempts"][rid]   # сквозной номер (B30 P6)
                 new = True
             con.execute("COMMIT")
         except Exception:
@@ -508,6 +535,188 @@ def record_run(rec: dict, db: Optional[Path] = None, now: Optional[dt.datetime] 
         con.close()
     return {"run_id": rid, "new": new, "task": task, "block": block, "duration_s": dur, "signal": sig,
             "outcome": outcome, "attempt": att}
+
+
+def _order_key(day: str, started_at: Optional[str], time_text: Optional[str]) -> tuple:
+    """-> (ключ времени | None, exact | approx). Неточное время из источника: «23:3x» -> 23:30, «~20:xx» -> 20:00,
+    «17:34-17:44» -> 17:34; без часов («утро») -> None (после строк со временем)."""
+    if started_at:
+        return str(started_at), "exact"
+    tt = str(time_text or "")
+    m = _APPROX_MIN_RE.search(tt)
+    if m:
+        mm = int(m.group(2)) * 10 + (0 if m.group(3) == "x" else int(m.group(3)))
+        return f"{day}T{int(m.group(1)):02d}:{mm:02d}:00", "approx"
+    m = _APPROX_HOUR_RE.search(tt)
+    if m:
+        return f"{day}T{int(m.group(1)):02d}:00:00", "approx"
+    return None, "approx"
+
+
+def _renumber_group(con: sqlite3.Connection, day: str, task: str, block: str) -> dict:
+    """Сквозной attempt в группе (day, task, block) по всем источникам (kind block_run), внутри открытой транзакции.
+    Порядок: время запуска (точное или приближённое; неизвестное -- в конце), при равенстве -- источник (дозапись и
+    блок раньше ретро-разбора), номер внутри источника, run_id. Строка без записи в run_attempts получает её
+    (attempt_src = прежний attempt -- номер внутри своего источника). -> {attempts: {run_id: n}, changed, approx}."""
+    rows = con.execute("SELECT r.run_id, r.started_at, r.time_text, r.source, r.attempt, a.attempt_src, a.run_id "
+                       "FROM run_metrics r LEFT JOIN run_attempts a ON a.run_id = r.run_id WHERE r.kind = 'block_run' "
+                       "AND r.day = ? AND r.task = ? AND r.block = ?", (day, task, block)).fetchall()
+    items = []
+    for rid, st, tt, src, att, asrc, has in rows:
+        if has is None:
+            asrc = att
+        key, order = _order_key(day, st, tt)
+        items.append(((key is None, key or "", 1 if src == RETRO else 0, asrc if asrc is not None else 10 ** 6, rid),
+                      rid, att, asrc, order, has is not None))
+    items.sort(key=lambda x: x[0])
+    out, changed, approx = {}, 0, 0
+    for n, (_, rid, att, asrc, order, has) in enumerate(items, start=1):
+        out[rid] = n
+        approx += order == "approx"
+        if att != n:
+            con.execute("UPDATE run_metrics SET attempt = ? WHERE run_id = ?", (n, rid))
+            changed += 1
+        con.execute("INSERT INTO run_attempts (run_id, attempt_src, attempt_order) VALUES (?, ?, ?) "
+                    "ON CONFLICT(run_id) DO UPDATE SET attempt_order = excluded.attempt_order", (rid, asrc, order))
+    return {"attempts": out, "changed": changed, "approx": approx}
+
+
+def renumber_attempts(con: sqlite3.Connection) -> dict:
+    """Все группы block_run (внутри открытой транзакции) -> {groups, rows, changed, approx}."""
+    con.execute(ATTEMPT_DDL)
+    groups = con.execute("SELECT DISTINCT day, task, block FROM run_metrics WHERE kind = 'block_run' "
+                         "ORDER BY day, task, block").fetchall()
+    rows = changed = approx = 0
+    for g in groups:
+        r = _renumber_group(con, *g)
+        rows += len(r["attempts"])
+        changed += r["changed"]
+        approx += r["approx"]
+    return {"groups": len(groups), "rows": rows, "changed": changed, "approx": approx}
+
+
+def migrate_attempts(db: Optional[Path] = None, backup_dir: Optional[Path] = None,
+                     now: Optional[dt.datetime] = None) -> dict:
+    """Перенумерация существующих строк (B30 P6). Уже перенумеровано (у каждой строки block_run есть запись в
+    run_attempts и номера сквозные) -> ничего (migrated=False, копии нет). Иначе: копия всей базы в backup_dir
+    (обязательна, сверка по числу строк), затем одна транзакция renumber_attempts()."""
+    now = now or dt.datetime.now()
+    db = Path(db or default_db())
+    con = connect(db)
+    try:
+        if run_schema(con) != RUN_SCHEMA:
+            raise SchemaError("run_metrics: схема v1 -- сначала migrate")
+        n0 = con.execute("SELECT count(*) FROM run_metrics").fetchone()[0]
+        con.isolation_level = None
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            probe = renumber_attempts(con)
+            missing = con.execute("SELECT count(*) FROM run_metrics r LEFT JOIN run_attempts a ON a.run_id = r.run_id "
+                                  "WHERE r.kind = 'block_run' AND a.run_id IS NULL").fetchone()[0]
+        finally:
+            con.execute("ROLLBACK")                      # пробный проход: ничего не записано
+        nb, bname = None, None
+        if probe["changed"] == 0 and missing == 0 and con.execute("SELECT count(*) FROM run_attempts").fetchone()[0] >= probe["rows"]:
+            return {"migrated": False, "rows": n0, "groups": probe["groups"], "block_rows": probe["rows"], "changed": 0,
+                    "approx": probe["approx"], "backup": None, "backup_rows": None}
+        if backup_dir is None:
+            raise ValueError("backup_dir: обязателен при перенумерации")
+        bdir = Path(backup_dir)
+        bdir.mkdir(parents=True, exist_ok=True)
+        bpath = bdir / f"{db.stem}_pre_attempts_{now.strftime('%Y%m%d_%H%M%S')}.db"
+        if bpath.exists():
+            raise FileExistsError(f"копия уже есть: {bpath.name}")
+        bcon = sqlite3.connect(str(bpath))
+        try:
+            con.backup(bcon)
+            nb = bcon.execute("SELECT count(*) FROM run_metrics").fetchone()[0]
+        finally:
+            bcon.close()
+        if nb != n0:
+            raise RuntimeError(f"копия базы: строк {nb}, в базе {n0}")
+        bname = bpath.name
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            res = renumber_attempts(con)
+            n1 = con.execute("SELECT count(*) FROM run_metrics").fetchone()[0]
+            if n1 != n0:
+                raise RuntimeError(f"перенумерация: строк {n1}, было {n0}")
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+        return {"migrated": True, "rows": n0, "groups": res["groups"], "block_rows": res["rows"],
+                "changed": res["changed"], "approx": res["approx"], "backup": bname, "backup_rows": nb}
+    finally:
+        con.close()
+
+
+def attempt_info(rid: str, db: Optional[Path] = None) -> Optional[dict]:
+    """run_attempts строки (attempt_src, attempt_order) -- только чтение; None -- нет записи."""
+    db = Path(db or default_db())
+    if not db.is_file():
+        return None
+    con = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        if not con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'run_attempts'").fetchone():
+            return None
+        row = con.execute("SELECT attempt_src, attempt_order FROM run_attempts WHERE run_id = ?", (rid,)).fetchone()
+    finally:
+        con.close()
+    return {"attempt_src": row[0], "attempt_order": row[1]} if row else None
+
+
+def ghost(db: Optional[Path] = None, now: Optional[dt.datetime] = None, days: int = GHOST_DAYS,
+          current_run_id: Optional[str] = None, kinds: Optional[tuple] = None) -> dict:
+    """«Призрак» (B30 P7): для каждого вида запуска -- лучший подтверждённый GREEN за `days` суток до now (строки
+    block / backfill с длительностью; лучший = меньше длительность, затем меньше попыток, затем меньше шагов) и
+    сравнение текущего запуска (current_run_id; сам себе не эталон). Только цифры; ничего не блокирует.
+    -> {kind: {block, n_green, best: {...} | None, current: {...} | None, vs: {...} | None}}."""
+    now = now or dt.datetime.now()
+    since = (now - dt.timedelta(days=days)).replace(microsecond=0).isoformat()
+    until = now.replace(microsecond=0).isoformat()
+    db = Path(db or default_db())
+    out = {}
+    if not db.is_file():
+        return out
+    con = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        if run_schema(con) != RUN_SCHEMA:
+            return out
+        cur = None
+        if current_run_id:
+            r = con.execute("SELECT block, task, started_at, duration_s, attempt, steps, outcome FROM run_metrics "
+                            "WHERE run_id = ?", (current_run_id,)).fetchone()
+            if r:
+                cur = {"block": r[0], "task": r[1], "started_at": r[2], "duration_s": r[3], "attempt": r[4],
+                       "steps": r[5], "outcome": r[6]}
+        for kind, blk in GHOST_KINDS.items():
+            if kinds and kind not in kinds:
+                continue
+            rows = con.execute("SELECT run_id, task, started_at, duration_s, attempt, steps FROM run_metrics WHERE "
+                               "kind = 'block_run' AND block = ? AND outcome = 'GREEN' AND duration_s IS NOT NULL AND "
+                               "started_at >= ? AND started_at <= ? AND source IN (" + ", ".join("?" * len(GHOST_SOURCES))
+                               + ") AND run_id != ?", (blk, since, until, *GHOST_SOURCES, current_run_id or "")).fetchall()
+            best = None
+            if rows:
+                b = min(rows, key=lambda x: (x[3], x[4] if x[4] is not None else 10 ** 6,
+                                             x[5] if x[5] is not None else 10 ** 6, x[2]))
+                best = {"task": b[1], "started_at": b[2], "duration_s": b[3], "attempt": b[4], "steps": b[5]}
+            c = cur if cur and cur["block"] == blk else None
+            vs = None
+            if best and c:
+                def cmp(a, b_, lo, hi):
+                    if a is None or b_ is None:
+                        return None
+                    return "equal" if a == b_ else (lo if a < b_ else hi)
+                vs = {"duration": cmp(c["duration_s"], best["duration_s"], "faster", "slower"),
+                      "duration_delta_s": None if c["duration_s"] is None else round(c["duration_s"] - best["duration_s"], 3),
+                      "attempts": cmp(c["attempt"], best["attempt"], "fewer", "more"),
+                      "steps": cmp(c["steps"], best["steps"], "fewer", "more")}
+            out[kind] = {"block": blk, "n_green": len(rows), "best": best, "current": c, "vs": vs}
+    finally:
+        con.close()
+    return out
 
 
 def read_run(rid: str, db: Optional[Path] = None) -> Optional[dict]:
@@ -688,9 +897,11 @@ def weekly(db: Optional[Path] = None, end_day: Optional[str] = None, k: float = 
         con.commit()
     finally:
         con.close()
+    # «призрак» (B30 P7): эталоны 7 суток до конца окна -- только цифры, вне weekly_uuid (слепок прежний)
+    gh_now = min(now, dt.datetime.combine(end, dt.time(23, 59, 59)))
     return {"weekly_uuid": wu, "n_days": len(days), "partial": partial, "daily_uuids": daily, "dips": dip,
             "dist_days": len(dist), "dist_skipped": dist_bad, "known": known, "insufficient": insufficient,
-            "undirected": undirected}
+            "undirected": undirected, "ghost": ghost(db, now=gh_now)}
 
 
 def zoom(weekly_uuid: str, db: Optional[Path] = None) -> dict:
@@ -806,6 +1017,7 @@ def import_retro(events: list, db: Optional[Path] = None, now: Optional[dt.datet
             raise SchemaError("run_metrics: схема v1 -- сначала migrate")
         con.isolation_level = None
         con.execute("BEGIN IMMEDIATE")
+        touched = set()
         try:
             for r in rows:
                 if con.execute("SELECT 1 FROM run_metrics WHERE run_id = ?", (r["run_id"],)).fetchone():
@@ -813,9 +1025,11 @@ def import_retro(events: list, db: Optional[Path] = None, now: Optional[dt.datet
                     continue
                 hit = None
                 if r["kind"] == "block_run" and r["attempt"] is not None:
-                    for row in con.execute("SELECT run_id, started_at, ended_at, outcome, source, fail_code, fail_stage, "
-                                           "boundary FROM run_metrics WHERE kind = 'block_run' AND day = ? AND task = ? "
-                                           "AND block = ? AND attempt = ? AND source LIKE 'backfill%' AND signal IS NOT NULL",
+                    for row in con.execute("SELECT r.run_id, r.started_at, r.ended_at, r.outcome, r.source, r.fail_code, "
+                                           "r.fail_stage, r.boundary FROM run_metrics r LEFT JOIN run_attempts a ON "
+                                           "a.run_id = r.run_id WHERE r.kind = 'block_run' AND r.day = ? AND r.task = ? "
+                                           "AND r.block = ? AND COALESCE(a.attempt_src, r.attempt) = ? AND r.source LIKE "
+                                           "'backfill%' AND r.signal IS NOT NULL",   # номер внутри источника (B30 P6)
                                            (r["day"], r["task"], r["block"], r["attempt"])):
                         if row[3] != "GREEN" and _time_fits(r["time_text"], row[1], row[2]):
                             hit = row
@@ -835,8 +1049,14 @@ def import_retro(events: list, db: Optional[Path] = None, now: Optional[dt.datet
                                     *[None] * len(RUN_COUNTS), r["signal"], now.isoformat(timespec="seconds"), RETRO,
                                     r["report_sha16"], r["outcome"], None, r["fail_code"], r["attempt"], r["kind"],
                                     r["boundary"], r["day"], r["time_text"], None, None, None, None, None))
+                if r["kind"] == "block_run":
+                    con.execute("INSERT OR REPLACE INTO run_attempts (run_id, attempt_src, attempt_order) VALUES (?, ?, ?)",
+                                (r["run_id"], r["attempt"], "exact" if r["started_at"] else "approx"))
+                    touched.add((r["day"], r["task"], r["block"]))
                 ins += 1
                 new += 1
+            for g in sorted(touched):                      # сквозная нумерация затронутых групп (B30 P6)
+                _renumber_group(con, *g)
             con.execute("COMMIT")
         except Exception:
             con.execute("ROLLBACK")

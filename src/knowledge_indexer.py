@@ -193,6 +193,26 @@ def extract_pulse(text: str):
     return int(match.group(1)) if match else None
 
 
+# B30 P5 (Ollama 500 на длинном входе): предел одного запроса эмбеддинга, знаков. Вход длиннее в Ollama не
+# отправляется (None + предупреждение). Вектор документа (get_embedding) считается по тем же кускам, что и
+# ChromaDB (chunk_text, CHUNK_SIZE / CHUNK_OVERLAP), куски заведомо короче предела.
+EMBED_MAX_CHARS = 8000
+_FALLBACK_CHUNK_SIZE, _FALLBACK_CHUNK_OVERLAP = 800, 150      # если oko_rag недоступен -- те же значения по умолчанию
+
+
+def _doc_chunks(text: str) -> list:
+    """Куски документа тем же чанкером, что и для ChromaDB (oko_rag/loader.chunk_text)."""
+    if RAG_SYNC_AVAILABLE:
+        return chunk_text(text, CHUNK_SIZE, CHUNK_OVERLAP)
+    out, start, step = [], 0, max(_FALLBACK_CHUNK_SIZE - _FALLBACK_CHUNK_OVERLAP, 1)
+    while start < len(text):
+        piece = text[start:start + _FALLBACK_CHUNK_SIZE].strip()
+        if piece:
+            out.append(piece)
+        start += step
+    return out
+
+
 def _request_embedding_vector(text: str):
     """Запрашивает у Ollama сырой вектор (list[float]) — общая сетевая
     логика для двух потребителей: get_embedding() (BLOB для SQLite,
@@ -205,6 +225,9 @@ def _request_embedding_vector(text: str):
     в асинхронном процессе bot.py, семафор не пробрасывается через границу
     процессов) — отсутствие вектора не должно блокировать индексацию текста.
     """
+    if len(text) > EMBED_MAX_CHARS:                     # B30 P5: длинный вход не уходит в Ollama (там -- HTTP 500)
+        logger.warning("Embedding: вход %d знаков > предела %d -- запрос не отправлен", len(text), EMBED_MAX_CHARS)
+        return None
     url = f"http://{config.OLLAMA_HOST}:{config.OLLAMA_PORT}/api/embeddings"
     payload = config.embed_request_body(config.OLLAMA_EMBED_MODEL, text)  # EMBED_CPU (01.11): bge-m3 на CPU
     try:
@@ -228,11 +251,27 @@ def get_embedding(text: str):
     файл целиком (не per-chunk) — сохранено для обратной совместимости с
     существующей проверкой has_embedding; реальный векторный поиск теперь
     идёт через per-chunk эмбеддинги в ChromaDB (см. index_chunks_to_rag).
+
+    B30 P5: раньше в Ollama уходил весь документ одним запросом (длинный -> HTTP 500). Теперь -- по кускам тем же
+    чанкером, что и для ChromaDB, вектор документа = поэлементное среднее векторов кусков. Короткий документ (один
+    кусок) -> один запрос и тот же вектор, что раньше. Хоть один кусок без вектора -> None (среднее по части
+    документа было бы смещённым), дальнейшие куски не запрашиваются. Потребитель поля -- только диагностика
+    has_embedding (tools/archive/check_knowledge.py); поиск идёт по кускам в ChromaDB.
     """
-    vector = _request_embedding_vector(text)
-    if vector is None:
+    vecs = []
+    for piece in _doc_chunks(text):
+        v = _request_embedding_vector(piece)
+        if v is None:
+            return None
+        if vecs and len(v) != len(vecs[0]):
+            logger.warning("Embedding: размерность кусков различается (%d / %d)", len(vecs[0]), len(v))
+            return None
+        vecs.append(v)
+    if not vecs:
         return None
-    return json.dumps(vector).encode("utf-8")
+    n = len(vecs)
+    mean = [sum(col) / n for col in zip(*vecs)]
+    return json.dumps(mean).encode("utf-8")
 
 
 def index_chunks_to_rag(content: str, filename: str, content_hash: str, category: str) -> int:

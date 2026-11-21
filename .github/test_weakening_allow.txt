@@ -1,0 +1,3 @@
+# Allowed weakening of tests (tools/weakening_guard.py, CI step 'test weakening guard'): one line per finding.
+# <kind>:<path>::<function> | <reason> | <YYYY-MM-DD> | <consent code of the Operator (journal of consents)>
+# kinds: deleted_file, removed_test, fewer_asserts, new_skip, wider_tolerance. Empty list = no weakening allowed.

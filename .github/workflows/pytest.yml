@@ -7,6 +7,8 @@
 # an already checked commit (status checks are bound to the commit SHA), so a push to them starts no second run.
 # Test reports (txt + junit xml) are kept as run artifacts for 7 days; the 30 slowest tests are listed in the log.
 # Actions are pinned to a full commit SHA (release tag in the comment).
+# Checkout depth 2: the parent snapshot is needed by the test weakening guard (tools/weakening_guard.py); the live-clock
+# guard of the tests runs inside the suite (src/test_clock_guard_b30.py, exceptions in .github/live_clock_allow.txt).
 name: pytest
 
 on:
@@ -35,6 +37,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           persist-credentials: false
+          fetch-depth: 2
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
@@ -50,6 +53,13 @@ jobs:
           python --version
           python -m pip install -c requirements.lock -r requirements.txt pytest pillow pypdf scipy python-docx openpyxl pyloudnorm PyQt6 pymupdf
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Weakened tests vs the parent snapshot (HEAD~1): removed tests / asserts, new skips, wider tolerances; each
+      # finding is red unless listed in .github/test_weakening_allow.txt (test | reason | date | consent code).
+      - name: test weakening guard (parent snapshot)
+        if: always()
+        shell: cmd
+        run: python tools/weakening_guard.py --base HEAD~1 --head HEAD --allow .github/test_weakening_allow.txt
 
       # cmd, not pwsh: pwsh 7 puts its module paths into PSModulePath, and the Windows PowerShell 5.1 started by the
       # tests then cannot load Get-Acl / Get-FileHash.
@@ -135,6 +145,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           persist-credentials: false
+          fetch-depth: 2
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
@@ -158,6 +169,11 @@ jobs:
           pwsh --version
           python -m pip install -c requirements.lock -r requirements.txt pytest pillow pypdf scipy python-docx openpyxl pyloudnorm PyQt6 pymupdf
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: test weakening guard (parent snapshot)
+        if: always()
+        shell: bash
+        run: python tools/weakening_guard.py --base HEAD~1 --head HEAD --allow .github/test_weakening_allow.txt
 
       # bash with set +e: the report is printed before the exit code of pytest is returned (same as the cmd step).
       - name: pytest src
