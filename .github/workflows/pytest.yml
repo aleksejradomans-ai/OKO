@@ -9,6 +9,8 @@
 # Actions are pinned to a full commit SHA (release tag in the comment).
 # Checkout depth 2: the parent snapshot is needed by the test weakening guard (tools/weakening_guard.py); the live-clock
 # guard of the tests runs inside the suite (src/test_clock_guard_b30.py, exceptions in .github/live_clock_allow.txt).
+# Control map (B32): each pytest job checks docs/control_map.csv against its own JUnit reports (a confirming test
+# that is not PASS -> red job), so the two required jobs green = every confirming test PASS on both platforms.
 name: pytest
 
 on:
@@ -116,6 +118,13 @@ jobs:
           foreach ($x in $missing) { Write-Output "MISSING SKIP $x" }
           Write-Output "skipped: got $($got.Count), known $($known.Count), unexpected $($unexpected.Count), missing $($missing.Count)"
           if ($unexpected.Count -or $missing.Count) { exit 1 }
+
+      # Control map vs the JUnit reports of this job (B32): FAIL / ERROR / SKIP without known_gap / XFAIL / XPASS /
+      # missing -> red; one platform prints "1 of 2" and gives no PASS (PASS = both required jobs green).
+      - name: control map (this platform)
+        if: always()
+        shell: cmd
+        run: python tools/verify_control_map.py --junit windows=pytest_src.xml --junit windows=pytest_extra.xml
 
       - name: Upload test reports
         if: always()
@@ -231,6 +240,12 @@ jobs:
           foreach ($x in $missing) { Write-Output "MISSING SKIP $x" }
           Write-Output "skipped: got $($got.Count), known $($known.Count), unexpected $($unexpected.Count), missing $($missing.Count)"
           if ($unexpected.Count -or $missing.Count) { exit 1 }
+
+      # Control map vs the JUnit reports of this job (B32), as in the Windows job.
+      - name: control map (this platform)
+        if: always()
+        shell: bash
+        run: python tools/verify_control_map.py --junit linux=pytest_src.xml --junit linux=pytest_extra.xml
 
       - name: Upload test reports
         if: always()
