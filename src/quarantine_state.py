@@ -901,7 +901,17 @@ def weekly(db: Optional[Path] = None, end_day: Optional[str] = None, k: float = 
     gh_now = min(now, dt.datetime.combine(end, dt.time(23, 59, 59)))
     return {"weekly_uuid": wu, "n_days": len(days), "partial": partial, "daily_uuids": daily, "dips": dip,
             "dist_days": len(dist), "dist_skipped": dist_bad, "known": known, "insufficient": insufficient,
-            "undirected": undirected, "ghost": ghost(db, now=gh_now)}
+            "undirected": undirected, "ghost": ghost(db, now=gh_now), "layers": layers_week(db, end.isoformat())}
+
+
+def layers_week(db: Optional[Path], end_day: str) -> dict:
+    """B31: счёт слоёв L0..L7 (таблица layer_digest, пишет tools/layer_digest.py в 03:27) за 7 суток до end_day --
+    только цифры, вне weekly_uuid (слепок прежний). Нет таблицы / сбой -> {} или {"error": имя исключения}."""
+    try:
+        import layer_events
+        return layer_events.read_digest(Path(db or default_db()), end_day, WEEK_DAYS)
+    except Exception as e:  # noqa: BLE001 - отчёт, не gate
+        return {"error": type(e).__name__}
 
 
 def zoom(weekly_uuid: str, db: Optional[Path] = None) -> dict:

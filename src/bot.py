@@ -64,6 +64,7 @@ import sandbox_talk      # B18 (18.11): режим ТОЛК -- спарринг 
 import shell_voice       # B18 (18.11): голос окна -- временная запись -> общий STT -> удаление файла
 import role_guard        # ROLE_R1 (10.11): проверки роли в коде -- ложная память, первое лицо, флаги
 import host_only         # (15.11, этап 1d): Host-Only -- хозяин по id из .env (OKO_HOST_USER_ID), fail-closed
+import layer_events      # B31 (21.11): счётчик слоёв L0..L7 -- только коды, без текста; телеметрия fail-open
 
 # --- Унификация RAG-контура с console_chat.py (устранение Split Brain) ---
 # knowledge_indexer.py (импортирован строкой выше) уже добавляет oko_rag/ в
@@ -473,6 +474,15 @@ def _save_exchange(user_id: int, user_text: str, assistant_text: str) -> bool:
     P1_LOG (26.10): строка P1 самодостаточна для замера (без пары с Response routed):
     tpl=1 -- ответ начинается с шаблона отказа identity, len -- длина
     нормализованного ответа, back -- на сколько событий назад совпадение."""
+    layer_events.record("L6", "input", "MEM_WRITE")   # B31 L6: каждая попытка записи обмена в память
+    try:
+        return _save_exchange_core(user_id, user_text, assistant_text)
+    except Exception:
+        layer_events.record("L6", "fail", "MEM_WRITE_FAIL")
+        raise
+
+
+def _save_exchange_core(user_id: int, user_text: str, assistant_text: str) -> bool:
     core = _get_memory()
     sid = core.resolve("telegram", str(user_id))
     norm = lambda t: " ".join(t.split()).lower()
@@ -492,6 +502,7 @@ def _save_exchange(user_id: int, user_text: str, assistant_text: str) -> bool:
                         user_id, int(a_norm.startswith(P1_TEMPLATE_PREFIX)), len(a_norm),
                         len(recent) - i,
                     )
+                    layer_events.record("L6", "catch", "P1_LOOP")
                     return False
     core.record_exchange(
         Envelope("telegram", str(user_id), user_text), user_text, assistant_text, subject_id=sid
@@ -655,8 +666,10 @@ async def process_logic(
         else:
             logger.info("[HISTORY_SKIPPED] [ROLE] self_question user=%s — code answer, model not called", user_id)
             return role_guard.SELF_TEXT
+    layer_events.record("L3", "input", "INPUT_FILTER")   # B31 L3: каждая проверка входа фильтром
     result = await asyncio.to_thread(dispatcher.dispatch, user_input)
     if not result.is_allowed:
+        layer_events.record("L3", "catch", "INPUT_BLOCKED")
         critical = next((i for i in result.incidents if i.level == "CRITICAL"), None)
         category = critical.category if critical else "UNKNOWN"
         logger.warning(f"Blocked input from user {user_id}: category={category}")
@@ -740,25 +753,31 @@ async def process_logic(
     else:
         raw_response, fix = role_guard.normalize_answer(raw_response)   # R2a хвост (11.11): P1 кодом, срез советов
         if fix:
+            layer_events.record("L2", "catch", "ROLE")
             logger.info("[ROLE] fix=%s user=%s", fix, user_id)
         raw_response, hfix = role_guard.health_cut(sanitized_input, raw_response)   # цифры здоровья не толкуем
         if hfix:
+            layer_events.record("L2", "catch", "ROLE")
             logger.info("[ROLE] fix=%s user=%s", hfix, user_id)
         raw_response, sfix = role_guard.stamp_cut(raw_response)   # метки [PASS дата] ставит только код
         if sfix:
+            layer_events.record("L2", "catch", "ROLE")
             logger.warning("[ROLE] fix=%s user=%s", sfix, user_id)
         api = router.fake_api(raw_response)   # D1 (02.11): выдуманная команда/путь API -- и на вопрос
         if api:
+            layer_events.record("L2", "catch", "D_GUARD")
             logger.warning("[HISTORY_SKIPPED] [D_GUARD] fake_api user=%s cmd=%s — answer hidden, exchange not persisted",
                            user_id, api)
             return _with_notice(D1_NOTE.format(cmd=api), getattr(result, "incidents", None))
         fake = router.fake_done(sanitized_input, raw_response)   # D_GUARD (этап D)
         if fake:
+            layer_events.record("L2", "catch", "D_GUARD")
             logger.warning("[HISTORY_SKIPPED] [D_GUARD] fake_done user=%s word=%s — exchange not persisted", user_id, fake)
             note = D_NOTE.format(word=fake)
             return f"{note}\n{_with_notice(raw_response, getattr(result, 'incidents', None))}"
         mem = role_guard.false_memory(sanitized_input, raw_response)   # ROLE C7 (10.11)
         if mem:
+            layer_events.record("L2", "catch", "HISTORY_SKIPPED")
             logger.warning("[HISTORY_SKIPPED] [ROLE] false_memory user=%s word=%s — exchange not persisted", user_id, mem)
             return f"{MEM_NOTE.format(word=mem)}\n{_with_notice(raw_response, getattr(result, 'incidents', None))}"
         flags = role_guard.observe(sanitized_input, raw_response)   # ROLE C6/C8/C9/C10/echo: журнал
@@ -766,9 +785,11 @@ async def process_logic(
             logger.info("[ROLE] flag=%s user=%s detail=%s", kind, user_id, detail)
         snap = router.state_snapshot(sanitized_input, raw_response)   # RZ2 (03.11): показать, не писать
         if snap:
+            layer_events.record("L2", "catch", "HISTORY_SKIPPED")
             logger.info("[HISTORY_SKIPPED] [STATE_SNAPSHOT] user=%s sig=%s — answer shown, exchange not persisted",
                         user_id, snap)
         elif role_guard.keep_out_of_history(flags):   # ROLE C10: первое лицо не тянется через историю
+            layer_events.record("L2", "catch", "HISTORY_SKIPPED")
             logger.info("[HISTORY_SKIPPED] [ROLE] self user=%s — answer shown, exchange not persisted", user_id)
         elif forced:   # R7: ответ малой модели без истории -- в историю не пишется
             logger.info("[HISTORY_SKIPPED] [GAME_MODE] force user=%s — exchange not persisted", user_id)
@@ -807,10 +828,12 @@ async def process_discuss_logic(
         # в /discuss Host-Only НЕ открывается -- у этого пути нет сторожей ответа (stamp_cut, fake_*), решение п.11
         logger.info("[HISTORY_SKIPPED] [ROLE] self_question user=%s — code answer, model not called", user_id)
         return role_guard.SELF_TEXT
+    layer_events.record("L3", "input", "INPUT_FILTER")
     result = await asyncio.to_thread(dispatcher.dispatch, user_input)
     if not result.is_allowed:
         critical = next((i for i in result.incidents if i.level == "CRITICAL"), None)
         category = critical.category if critical else "UNKNOWN"
+        layer_events.record("L3", "catch", "INPUT_BLOCKED")
         logger.warning(f"Blocked input (discuss mode) from user {user_id}: category={category}")
         governor.registry.increment_state("input_blocked_count")
         input_monitor.record_event(ComplianceEvent.VIOLATION)
@@ -868,7 +891,7 @@ async def process_discuss_logic(
 
 # EVENTS (этап C, 01.11): события модулей -> журнал событий -> факты в контексте мозга.
 def _event(src: str, text: str, kind: Optional[str] = None) -> None:
-    event_log.record(src, text, kind)    # не бросает; до init -- no-op; kind -- (происхождение)
+    event_log.record(src, text, kind)    # не бросает; до init -- no-op; kind -- (происхождение); B31 L7 -- внутри
 
 
 def _home_facts() -> str:
@@ -956,6 +979,7 @@ def history_colour(events: list) -> tuple:
 
 async def _route_reply(app: Application, user_id: int, text: str, raw: str) -> Optional[str]:
     """Ответ модуля или None (-> мозг). Текст пользователя в журнал не пишется."""
+    layer_events.record("L1", "input", "ROUTE")   # B31 L1: каждое решение маршрута
     try:
         if host_only.is_host(user_id, config):   # Host-Only -- только по id отправителя, текст роли не играет
             hr = router.host_route(text, raw)
@@ -984,6 +1008,7 @@ async def _route_reply(app: Application, user_id: int, text: str, raw: str) -> O
             logger.info("[BIND] user=%s applied over=%s", user_id, r.reason)
             r = hit
         if r.kind == router.BRAIN:
+            layer_events.record("L1", "input", "ROUTE_MISS")   # B31 L1: ни одно правило не взяло -> мозг (вне e_k, Q1)
             return None
         reg = app.bot_data.get("proof_registry")
         if r.kind == router.SELF:
@@ -1021,6 +1046,7 @@ async def _route_reply(app: Application, user_id: int, text: str, raw: str) -> O
             await asyncio.to_thread(_proof_record, app, reg, "garmin", outcome)
         return answer
     except Exception as e:
+        layer_events.record("L1", "fail", "ROUTE_ERROR")
         logger.warning("[ROUTE] failed, fallback to brain: %s: %s", type(e).__name__, e)
         return None
 
@@ -1042,25 +1068,31 @@ async def _run_tv_route(app: Application, user_id: int, r) -> tuple:
 
 # --- R2c BIND_LAYER (11.11): сбой памяти связок не ломает маршрут -- правила работают как до R2c ---------------
 def _bind_apply(user_id: int, r, text: str):
+    layer_events.record("L6", "input", "BIND")   # B31 L6: каждое обращение к памяти связок
     try:
         return bind_layer.LAYER.apply_route(user_id, r, text)
     except Exception as e:
+        layer_events.record("L6", "fail", "BIND_FAIL")
         logger.warning("[BIND] apply failed: %s: %s", type(e).__name__, e)
         return None
 
 
 def _bind_clarify_buttons(user_id: int, r, text: str):
+    layer_events.record("L6", "input", "BIND")
     try:
         return bind_layer.LAYER.clarify_buttons(user_id, r, text)
     except Exception as e:
+        layer_events.record("L6", "fail", "BIND_FAIL")
         logger.warning("[BIND] buttons failed: %s: %s", type(e).__name__, e)
         return None
 
 
 def _bind_after_tv(user_id: int, text: str, r, answer: str, outcome):
+    layer_events.record("L6", "input", "BIND")
     try:
         return bind_layer.LAYER.after_tv(user_id, text, r, answer, outcome)
     except Exception as e:
+        layer_events.record("L6", "fail", "BIND_FAIL")
         logger.warning("[BIND] record failed: %s: %s", type(e).__name__, e)
         return None
 
@@ -1077,9 +1109,11 @@ async def _bind_request(app: Application, user_id: int, text: str):
         return parsed[1]
     _, x, key, cmd = parsed
     answer, outcome = await _run_tv_route(app, user_id, router.Route(router.TV, cmd, reason="bind_new"))
+    layer_events.record("L6", "input", "BIND")
     try:
         rep = await asyncio.to_thread(bind_layer.LAYER.bind_after_run, user_id, x, key, cmd, answer, outcome)
     except Exception as e:
+        layer_events.record("L6", "fail", "BIND_FAIL")
         logger.warning("[BIND] save failed: %s: %s", type(e).__name__, e)
         return f"{answer}\n{bind_layer.T_MEM_DOWN}"           # F10: команда исполнена, не сохранилась память
     logger.info("[BIND] user=%s request outcome=%s buttons=%s", user_id, outcome, bool(rep.buttons))
@@ -1238,6 +1272,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning("Unauthorized message ignored: user_id=%s len=%d", user_id, len(text))
         return
     logger.info(f"Processing message from {user_id}: len={len(text)}")
+    layer_events.record("L0", "input", "TEXT")   # B31 L0: каждое входящее сообщение
     _msg_tick(user_id)                    # счётчик сообщений для расстояния контекста (текст не хранится)
 
     # B18: тумблер БОЕВОЙ / ТОЛК -- ДО оценок, раскладки, режима ТВ, печати и маршрутизатора.
@@ -1592,6 +1627,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if _talk.active(user_id):              # B18: в ТОЛК голосовые Telegram не скачиваются и не распознаются
         await msg.reply_text(sandbox_talk.T_TG_VOICE)
         return
+    layer_events.record("L0", "input", "VOICE")   # B31 L0: каждое голосовое
     vdir = config.BASE_DIR / "voice_tmp"
     vdir.mkdir(parents=True, exist_ok=True)
     path = vdir / f"{msg.voice.file_unique_id}.ogg"
@@ -1599,6 +1635,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _download_voice(msg.voice, path)
     except Exception as e:
         path.unlink(missing_ok=True)
+        layer_events.record("L0", "fail", "VOICE_DL_FAIL")
         logger.warning("[VOICE] не скачано: %s: %s", type(e).__name__, e)
         await msg.reply_text(f"🎙 Не скачал голосовое из Telegram ({type(e).__name__}) — сбой связи, "
                              f"не распознавания. Повтори.")
@@ -1606,14 +1643,17 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         text = await asyncio.wait_for(asyncio.to_thread(stt.transcribe, path), timeout=STT_TIMEOUT_S)
     except TimeoutError:
+        layer_events.record("L0", "fail", "STT_TIMEOUT")
         logger.error("[VOICE] распознавание не уложилось в %.0f с — прервано, бот продолжает работу", STT_TIMEOUT_S)
         await msg.reply_text("🎙 Распознавание зависло и прервано — бот работает дальше. Повтори голосовое; "
                              "если повторится — перезапусти службу.")
         return
     except stt.SttUnavailable as e:
+        layer_events.record("L0", "fail", "STT_FAIL")
         await msg.reply_text(f"🎙 Распознавание речи недоступно: {e}")
         return
     except Exception as e:
+        layer_events.record("L0", "fail", "STT_FAIL")
         logger.exception("[VOICE] сбой распознавания")
         await msg.reply_text(f"🎙 Не получилось распознать: {type(e).__name__}")
         return

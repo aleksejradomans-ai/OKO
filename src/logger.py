@@ -27,6 +27,7 @@ get_logger(__name__), не настраивают формат сами.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import sys
 
@@ -65,6 +66,7 @@ def setup_logging(level: int = logging.INFO) -> None:
         )
         return
 
+    was = force_utf8()
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
 
@@ -73,6 +75,35 @@ def setup_logging(level: int = logging.INFO) -> None:
     root.addHandler(handler)
 
     _configured = True
+    # B31 P5: строка-граница (ASCII) -- с этого момента строки процесса в UTF-8; старые строки лога не переписываются.
+    logging.getLogger(__name__).info("%s utf-8 from %s (stderr was %s)", ENCODING_MARK,
+                                     _dt.datetime.now().replace(microsecond=0).isoformat(), was or "-")
+
+
+# B31 P5: под NSSM stderr -- файл, и Python на Windows кодирует его в кодировке локали (cp1251), а не UTF-8:
+# кириллица в логе бота шла cp1251 внутри UTF-8 (сотни строк за неделю). Кодировка задаётся явно, в коде, а не
+# переменной окружения службы.
+ENCODING_MARK = "[LOG_ENCODING]"
+
+
+def force_utf8(streams=None) -> str:
+    """stderr / stdout -> UTF-8 (errors=backslashreplace). Возвращает прежнюю кодировку stderr ('' -- не менялась).
+    Поток без reconfigure (подменённый в тестах) не трогается. Перевод строк потока НЕ меняется (B31 попытка 2):
+    лог NSSM на Windows всегда шёл с CRLF -- его читатели (sleep_digest, process_watchdog) режут строки по нему, а
+    смена на LF посреди файла дала бы смешанный файл. Меняется только кодировка."""
+    was = ""
+    for name in (streams or ("stderr", "stdout")):
+        st = getattr(sys, name, None)
+        enc = (getattr(st, "encoding", "") or "").lower().replace("_", "-")
+        if st is None or enc in ("utf-8", "utf8") or not hasattr(st, "reconfigure"):
+            continue
+        try:
+            st.reconfigure(encoding="utf-8", errors="backslashreplace")
+            if name == "stderr":
+                was = enc
+        except (ValueError, OSError):   # поток уже читался / закрыт -- оставить как есть
+            pass
+    return was
 
 
 def get_logger(name: str) -> logging.Logger:

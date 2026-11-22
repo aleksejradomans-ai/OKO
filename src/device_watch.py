@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
+import layer_events   # B31 L4: опрос облака SmartThings = input, обрыв / отказ = fail (только коды)
+
 import samsung_names_ru
 
 logger = logging.getLogger("oko.devices")
@@ -264,12 +266,15 @@ class Monitor:
     transport_alerted: bool = False
 
     def poll_once(self) -> list[str]:
+        layer_events.record("L4", "input", "ST_POLL")
         try:
             snaps = fetch_snapshots(self.token, self.get)
         except RateLimited:
+            layer_events.record("L4", "fail", "ST_RATE")
             logger.info("[DEVICES] SmartThings 429 — цикл пропущен")
             return []
         except AuthFailed as e:
+            layer_events.record("L4", "fail", "ST_AUTH")
             logger.warning("[DEVICES] SmartThings auth: %s", e)
             if self.auth_broken:
                 return []
@@ -277,6 +282,7 @@ class Monitor:
             return ["⚠️ Техника: облако SmartThings не принимает токен (истёк или отозван). "
                     "Уведомления о стирке и сушке остановлены до замены OKO_SMARTTHINGS_TOKEN."]
         except Transport as e:
+            layer_events.record("L4", "fail", "ST_TRANSPORT")
             self.transport_fails += 1
             logger.warning("[DEVICES] SmartThings transport fail=%d: %s", self.transport_fails, e)
             if self.transport_fails >= TRANSPORT_ALERT_AFTER and not self.transport_alerted:

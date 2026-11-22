@@ -30,6 +30,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import layer_events   # B31 L7: запись в журнал событий = input, сбой записи = fail (только коды)
+
 ENV_PATH = "OKO_EVENT_LOG"
 DEFAULT_PATH = Path(__file__).resolve().parent.parent / "data" / "events.jsonl"
 TAIL_BYTES = 128 * 1024
@@ -116,11 +118,13 @@ class EventLog:
         line = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
         with self._lock:
             self._items.append(rec)
+            layer_events.record("L7", "input", "EVENT_WRITE")
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 with open(self.path, "ab") as f:
                     f.write(line)
             except OSError as e:
+                layer_events.record("L7", "fail", "STORE_WRITE_FAIL")
                 logger.warning("[EVENTS] write failed: %s: %s", type(e).__name__, e)
         return rec
 

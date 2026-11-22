@@ -39,6 +39,7 @@ try:                 # (16.11, фаза 3, этап 3d): шлюз Σ перед 
     import sigma_gate    # Модуль приватен (ALLOWED_GAPS export_public): без него -- прежний путь исполнения.
 except ImportError:  # pragma: no cover - публичное зеркало без слоя Σ
     sigma_gate = None
+import layer_events   # B31: L3 шлюз Σ, L4 команда ТВ, L5 сверка, L7 теневой журнал -- только коды
 import tv_commands
 import tv_intent
 import tv_nav
@@ -683,7 +684,9 @@ def shadow_write(**row: Any) -> None:
     try:
         row.setdefault("ts", int(time.time() * 1000))
         clean = shadow_validate(row)
+        layer_events.record("L7", "input", "JOURNAL_WRITE")
         if clean is None:
+            layer_events.record("L7", "fail", "SCHEMA_REJECT")
             if "schema" not in _SHADOW_WARNED:
                 _SHADOW_WARNED.add("schema")
                 logger.warning("[SIGMA_SHADOW] строка отвергнута схемой (поля: %s)", ",".join(sorted(row)))
@@ -692,6 +695,7 @@ def shadow_write(**row: Any) -> None:
         with _SHADOW_LOCK:
             _shadow_append(shadow_path(), line)
     except Exception as exc:  # noqa: BLE001 - журнал не влияет на команду
+        layer_events.record("L7", "fail", "STORE_WRITE_FAIL")
         if "write" not in _SHADOW_WARNED:
             _SHADOW_WARNED.add("write")
             logger.warning("[SIGMA_SHADOW] запись не удалась: %s", type(exc).__name__)
@@ -1154,10 +1158,12 @@ def _execute(command: Command, tv_factory: Callable[[], Any]) -> str:
     live = sigma_gate.live_enabled() if sigma_gate is not None else False
     if command.kind == tv_nav.LOCAL_KIND or (not shadow_enabled() and not live):
         return _execute_core(command, tv_factory, None)
+    layer_events.record("L3", "input", "SIGMA_CHECK")   # B31 L3: каждая проверка шлюзом Σ
     verdict = _sigma_before(command, getattr(_INTENT, "src", "rule") or "rule")
     if live:
         blocked = _sigma_live_block(command, tv_factory, verdict)
         if blocked is not None:
+            layer_events.record("L3", "catch", "SIGMA_HALT")
             return blocked
     if not shadow_enabled():
         return _execute_core(command, tv_factory, None)
@@ -1169,7 +1175,25 @@ def _execute(command: Command, tv_factory: Callable[[], Any]) -> str:
     answer = _execute_core(command, tv_factory, run)
     run.finish(command)
     _sigma_after(run)
+    _layer_verify(run)
     return answer
+
+
+def _layer_verify(run: "_ShadowRun") -> None:
+    """B31 L5: сверка состояния после команды = input; FAIL / WARN / BLIND -- раздельными кодами. Сбой исполнителя (L4:
+    сеть, пара, ошибка ТВ) -- не сверка: строки L5 нет. L5 FAIL после пропуска шлюзом Σ = L3 fail GUARD_MISS."""
+    try:
+        if run.outcome == "FAIL" and run.err != "verify_fail":
+            return
+        layer_events.record("L5", "input", "VERIFY")
+        if run.outcome == "FAIL":
+            layer_events.record("L5", "fail", "VERIFY_FAIL")
+            if run.verdict is not None and getattr(run.verdict, "execute", False):
+                layer_events.record("L3", "fail", "GUARD_MISS")
+        elif run.outcome == "WARN":
+            layer_events.record("L5", "fail", "VERIFY_BLIND" if run.kind == BLIND else "VERIFY_WARN")
+    except Exception:  # noqa: BLE001 - телеметрия не влияет на команду
+        pass
 
 
 def _execute_core(command: Command, tv_factory: Callable[[], Any], run: "_ShadowRun | None") -> str:
@@ -1179,6 +1203,7 @@ def _execute_core(command: Command, tv_factory: Callable[[], Any], run: "_Shadow
         return command.run(None)
     tv = None
     pre_note = music_note = ""
+    layer_events.record("L4", "input", "TV_CMD")   # B31 L4: каждая команда ТВ
     try:
         tv = tv_factory()
         pre_note = _pre(command.name)
@@ -1187,21 +1212,25 @@ def _execute_core(command: Command, tv_factory: Callable[[], Any], run: "_Shadow
         if run is not None:
             run.classify(command, answer)
     except TVNotPaired as exc:
+        layer_events.record("L4", "fail", "TV_NOT_PAIRED")
         logger.warning("[TV_BOT] нет пары: %s", exc)
         if run is not None:
             run.failed(None)
         return "📺 Бот ещё не связан с телевизором — нужен разовый пайринг на ПК (tv_pair.py)."
     except TVAuthError as exc:
+        layer_events.record("L4", "fail", "TV_NOT_PAIRED")
         logger.warning("[TV_BOT] пара отклонена: %s", exc)
         if run is not None:
             run.failed(None)
         return "📺 Телевизор отклонил связь с ботом — нужен повторный пайринг на ПК (tv_pair.py)."
     except TVUnsupported as exc:
+        layer_events.record("L4", "fail", "TV_UNSUPPORTED")
         logger.info("[TV_BOT] не поддерживается: %s", exc)
         if run is not None:
             run.failed(None)
         return f"📺 Этот телевизор такое не умеет ({describe_command(command)})."
     except TVTransportError as exc:
+        layer_events.record("L4", "fail", "TV_TIMEOUT")
         logger.warning("[TV_BOT] сеть cmd=%s: %s", command.name, exc)
         if run is not None:
             run.failed("net")
@@ -1209,11 +1238,13 @@ def _execute_core(command: Command, tv_factory: Callable[[], Any], run: "_Shadow
         host = host if isinstance(host, str) else None
         return transport_text(exc, host) + network_hint(exc, host)
     except TVError as exc:
+        layer_events.record("L4", "fail", "TV_ERROR")
         logger.warning("[TV_BOT] ошибка телевизора cmd=%s: %s", command.name, exc)
         if run is not None:
             run.failed(None)
         return "📺 Телевизор ответил ошибкой — команда не выполнена. Повтори; если повторится — сообщи администратору."
     except ValueError as exc:
+        layer_events.record("L4", "fail", "TV_VALUE")
         if run is not None:
             run.failed(None)
         if tv is None:                  # TVClient.from_env: TV_HOST не задан — настройка, а не сбой
@@ -1221,6 +1252,7 @@ def _execute_core(command: Command, tv_factory: Callable[[], Any], run: "_Shadow
             return "📺 Телевизор не настроен: не задан его адрес (TV_HOST в .env на ПК)."
         return f"📺 Команда не выполнена: {exc}."   # значение вне допустимого; тексты tv_control русские
     except Exception as exc:  # noqa: BLE001 - в бот не должно утечь исключение
+        layer_events.record("L4", "fail", "TV_EXC")
         logger.exception("[TV_BOT] непредвиденная ошибка cmd=%s", command.name)
         if run is not None:
             run.failed(None)

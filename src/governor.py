@@ -23,6 +23,7 @@ import hashlib
 
 import config
 import game_mode          # GAME_MODE v2 (02.11)
+import layer_events      # B31: L2 вызовы модели / судьи и сбои, L3 предохранитель и вердикт судьи -- только коды
 import prompt_safety
 from src.manifesto import Manifesto
 from src.monitor import ComplianceEvent, ComplianceMonitor
@@ -158,6 +159,9 @@ def log_service_code(
     может «покрасить» жёлтый код в красный."""
     if code not in SERVICE_CODES:
         raise ValueError(f"unknown service code: {code!r}")
+    lk = LAYER_OF_CODE.get(code)
+    if lk is not None:
+        layer_events.record(*lk)          # B31: служебный код -> строка слоя (единая точка; текст detail не пишется)
     if code in YELLOW_CODES or (code in SPLIT_CODES and transport):
         level = logging.WARNING
     else:
@@ -168,6 +172,20 @@ def log_service_code(
     else:
         logger.log(level, "%s", marker, exc_info=exc_info)
     return marker
+
+
+# B31: служебный код -> (слой, вид, код слоя). Сбой связи с моделью и сбой судьи -- L2 fail; отказ предохранителя
+# и блок по вердикту судьи -- L3 catch (защита сработала).
+LAYER_OF_CODE = {
+    "LLM_TIMEOUT": ("L2", "fail", "MODEL_ERROR"),
+    "LLM_UNAVAILABLE": ("L2", "fail", "MODEL_ERROR"),
+    "JUDGE_ERROR": ("L2", "fail", "JUDGE_ERROR"),
+    "JUDGE_UNPARSEABLE": ("L2", "fail", "JUDGE_UNPARSEABLE"),
+    "JUDGE_TOO_LONG": ("L2", "fail", "JUDGE_TOO_LONG"),
+    "SYSTEM_DEGRADED": ("L3", "catch", "BREAKER_OPEN"),
+    "COMPLIANCE_UNRESOLVED": ("L3", "catch", "JUDGE_BLOCK"),
+    "HALT_CONDITION": ("L3", "catch", "JUDGE_BLOCK"),
+}
 
 
 _SERVICE_MARKERS = frozenset(f"[ERR: {_c}]" for _c in SERVICE_CODES)
@@ -745,6 +763,7 @@ class AgentGovernor:
         # CIRCUIT_BREAKER_WIRED: CLOSED/OPEN/HALF_OPEN ведёт CircuitBreaker поверх
         # того же ComplianceMonitor. OPEN -- отказ без вызова LLM (жёлтый
         # SYSTEM_DEGRADED); HALF_OPEN -- ровно одна проба, исход фиксируется.
+        layer_events.record("L3", "input", "GOV_CHECK")   # B31 L3: каждая проверка предохранителя
         breaker_state = await self._breaker.guard()
         if breaker_state == BreakerState.OPEN:
             return log_service_code(
@@ -828,6 +847,7 @@ class AgentGovernor:
         n = len(CJK_RE.findall(text))
         if not n:
             return text
+        layer_events.record("L2", "catch", "CJK_GUARD")   # B31 L2: сторож языка сработал
         try:
             with _ctx_call("cjk_retry"):
                 retry = await self._call_llm_with_timeout(
@@ -1584,6 +1604,7 @@ class AgentGovernor:
         не нужен.
         """
         effective_timeout = timeout if timeout is not None else config.LLM_TIMEOUT
+        layer_events.record("L2", "input", "JUDGE" if ctx_call_type.get() == "judge" else "MODEL")   # B31 L2
         return await asyncio.wait_for(
             self._route_to_llm(prompt, system_prompt=system_prompt, options=options),
             timeout=effective_timeout,
