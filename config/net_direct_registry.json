@@ -38,6 +38,7 @@
   "src/tv_probe.py": {"libs": ["requests", "urllib3"], "target": "телевизор, локальная сеть (ручной)"},
   "src/tv_snapshot.py": {"libs": ["requests", "urllib3"], "target": "телевизор, локальная сеть (ручной)"},
   "tools/caps_probe.py": {"libs": ["httpx"], "target": "Ollama, локальный адрес (config)"},
+  "tools/notify.py": {"libs": ["urllib.request"], "target": "api.telegram.org: только sendMessage на id владельца (короткий итог служебного скрипта); добавлен после заморозки решением владельца -- шлюз пропускает только GET"},
   "tools/oko_shell_cli.py": {"libs": ["socket"], "target": "канал оболочки, 127.0.0.1"},
   "tools/tv_wol_probe.py": {"libs": ["socket"], "target": "пакет включения ТВ, локальная сеть (ручной)"}
  }
