@@ -5,8 +5,9 @@
 одной платформе, плохой evidence, пустой scope, устаревшая карта, расхождение кодов ядра, source-scan под видом behavior.
 Тесты-лжецы: мутанты верификатора «XFAIL = PASS», «одного отчёта достаточно», «SKIP без known_gap = GAP» и «чтение
 исходника не проверяется» обязаны быть пойманы теми же сценариями.
-Последний блок -- настоящая карта репозитория: структура, символы, коды ядра и docs/CONTROL_MAP.md (по синтетическому
-отчёту «все тесты карты прошли на обеих платформах»)."""
+Последний блок -- настоящая карта репозитория: структура, символы, коды ядра и docs/CONTROL_MAP.md -- по НАСТОЯЩИМ
+отчётам JUnit двух платформ (B32h: src/control_map_junit/ -- случаи карты, извлечённые из реальных отчётов Windows и
+Linux), с тестами-лжецами: испорченная карта, отчёт одной платформы, провал теста красной зоны на одной платформе."""
 from __future__ import annotations
 
 import csv
@@ -480,6 +481,17 @@ def _repo_rows():
     return list(csv.DictReader(io.StringIO(text)))
 
 
+CM_JUNIT = ROOT / "src" / "control_map_junit"
+
+
+def _real_junit(*plats: str) -> list:
+    """--junit для фикстуры настоящих отчётов (B32h): src/control_map_junit/<платформа>.xml."""
+    res = []
+    for p in plats:
+        res += ["--junit", f"{p}={CM_JUNIT / (p + '.xml')}"]
+    return res
+
+
 def _synthetic_all_pass(path: Path) -> Path:
     cases = {}
     for r in _repo_rows():
@@ -490,14 +502,14 @@ def _synthetic_all_pass(path: Path) -> Path:
 
 def test_repo_map_structure_symbols_codes_and_generated_map(tmp_path, capsys):
     """Карта репозитория: ID 1-в-1, файлы и символы есть, коды ядра = реестр, тесты карты не читают исходник при
-    evidence behavior / integration, docs/CONTROL_MAP.md = свежая карта (если все тесты карты прошли на обеих
-    платформах). Настоящие статусы считает job control-map в CI по двум отчётам JUnit."""
-    x = _synthetic_all_pass(tmp_path / "all.xml")
-    rc = V.run(["--root", str(ROOT), "--junit", f"windows={x}", "--junit", f"linux={x}",
-                "--check-md", "docs/CONTROL_MAP.md", "--base-rev", "HEAD"])
+    evidence behavior / integration, docs/CONTROL_MAP.md = свежая карта по настоящим отчётам JUnit двух платформ
+    (фикстура src/control_map_junit/, B32h). В CI тот же расчёт по отчётам обоих джобов делает job control-map."""
+    rc = V.run(["--root", str(ROOT)] + _real_junit("windows", "linux") + ["--check-md", "docs/CONTROL_MAP.md",
+                                                                       "--base-rev", "HEAD"])
     out = capsys.readouterr().out
     assert rc == 0, out
     assert "CODES PASS" in out and "карта: совпадает со свежей" in out
+    assert "проверено на 2 платформах из 2" in out and "нарушений: 0" in out
 
 
 def test_repo_map_has_every_evidence_counted_honestly():
@@ -506,3 +518,63 @@ def test_repo_map_has_every_evidence_counted_honestly():
     for r in rows:
         if r["evidence"] == "manual":
             assert not r["tests"] and r["known_gap"]
+
+
+# ---------------------------------------------------------------- B32h: настоящие отчёты двух платформ, лжецы
+def test_real_junit_fixture_is_real_not_synthetic(tmp_path, capsys):
+    """Фикстура -- настоящие отчёты: на Linux платформенный пропуск ACL-теста Windows виден (SKIP -> known_gap -> GAP),
+    а синтетический «всё прошло» его не показал бы; на Windows тот же тест прошёл."""
+    rc = V.run(["--root", str(ROOT)] + _real_junit("windows", "linux") + ["--base-rev", "HEAD"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "test_atomic_write_in_closed_dir_keeps_closed_acl [linux]: SKIP (known_gap)" in out
+    assert "test_atomic_write_in_closed_dir_keeps_closed_acl [windows]" not in out
+    x = _synthetic_all_pass(tmp_path / "all.xml")
+    rc = V.run(["--root", str(ROOT), "--junit", f"windows={x}", "--junit", f"linux={x}", "--base-rev", "HEAD"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "SKIP (known_gap)" not in out
+    for p in ("windows", "linux"):
+        head = (CM_JUNIT / f"{p}.xml").read_text(encoding="utf-8").splitlines()[:3]
+        assert any(f"control map fixture, {p}:" in h for h in head) and "hostname=" not in "".join(head)
+
+
+def test_liar_spoiled_map_is_red(tmp_path, capsys):
+    """Испорченная карта (один статус PASS -> GAP) -> «карта устарела», EXIT=1 (job control-map красный)."""
+    md = (ROOT / "docs" / "CONTROL_MAP.md").read_text(encoding="utf-8")
+    assert md.count("| PASS |") >= 1
+    bad = tmp_path / "CONTROL_MAP.md"
+    bad.write_text(md.replace("| PASS |", "| GAP |", 1), encoding="utf-8")
+    rc = V.run(["--root", str(ROOT)] + _real_junit("windows", "linux") + ["--check-md", str(bad), "--base-rev", "HEAD"])
+    out = capsys.readouterr().out
+    assert rc == 1 and "карта: УСТАРЕЛА" in out and "EXIT=1" in out
+
+
+def test_liar_one_platform_junit_is_red(capsys):
+    """Отчёт одной платформы: сверка карты отказывается (код 2 -- job красный), без сверки -- «1 из 2», PASS нет."""
+    for p in ("windows", "linux"):
+        rc = V.run(["--root", str(ROOT)] + _real_junit(p) + ["--check-md", "docs/CONTROL_MAP.md", "--base-rev", "HEAD"])
+        out = capsys.readouterr().out
+        assert rc == 2 and "USAGE --write-md / --check-md только при отчётах всех платформ" in out
+        rc = V.run(["--root", str(ROOT)] + _real_junit(p) + ["--base-rev", "HEAD"])
+        out = capsys.readouterr().out
+        assert "проверено на 1 платформе из 2: PASS не выдаётся" in out
+        assert " PASS behavior" not in out and " PASS integration" not in out
+
+
+def test_liar_red_zone_test_failing_on_one_platform_is_red(tmp_path, capsys):
+    """Провал подтверждающего теста красной зоны на ОДНОЙ платформе -> строка FAIL, EXIT=1 (job красный)."""
+    zones = V.invariant_zones(ROOT / "docs" / "INVARIANTS.md")
+    row = next(r for r in _repo_rows() if "red" in zones.get(r["id"], []) and r["evidence"] in ("behavior", "integration"))
+    t = [x.strip() for x in row["tests"].split(";") if x.strip()][0]
+    cls, name = V.nodeid_key(t)
+    for plat in ("windows", "linux"):
+        src = (CM_JUNIT / f"{plat}.xml").read_text(encoding="utf-8")
+        tag = f'<testcase classname="{cls}" name="{name}" />'
+        assert src.count(tag) == 1, tag
+        bad = tmp_path / f"{plat}_bad.xml"
+        bad.write_text(src.replace(tag, tag[:-3] + '><failure message="liar" /></testcase>'), encoding="utf-8")
+        other = "linux" if plat == "windows" else "windows"
+        rc = V.run(["--root", str(ROOT), "--junit", f"{plat}={bad}"] + _real_junit(other) +
+                   ["--check-md", "docs/CONTROL_MAP.md", "--base-rev", "HEAD"])
+        out = capsys.readouterr().out
+        assert rc == 1 and f"ROW {row['id']} FAIL" in out and f"{t} [{plat}]: FAIL" in out, out

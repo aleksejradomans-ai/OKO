@@ -139,7 +139,7 @@ def test_workflow_has_windows_and_linux_jobs_with_the_same_commands():
     if not wf.is_file():
         pytest.skip("нет .github/workflows/pytest.yml (дерево без каталога CI)")
     jobs = _job_blocks(wf.read_text(encoding="utf-8"))
-    assert sorted(jobs) == ["pytest-linux", "pytest-windows"]
+    assert sorted(jobs) == ["control-map", "pytest-linux", "pytest-windows"]      # B32h: + job control-map
     w, li = jobs["pytest-windows"], jobs["pytest-linux"]
     assert "name: pytest-windows" in w and "runs-on: windows-latest" in w
     assert "name: pytest-linux" in li and "runs-on: ubuntu-latest" in li
@@ -182,7 +182,7 @@ def test_workflow_one_run_per_commit_not_cancelled():
 
 def test_both_jobs_cache_pip_durations_and_upload_reports():
     jobs = _job_blocks(_wf_text())
-    assert sorted(jobs) == ["pytest-linux", "pytest-windows"]               # имена проверок защиты веток
+    assert sorted(jobs) == ["control-map", "pytest-linux", "pytest-windows"]  # имена проверок защиты веток
     for plat, job in (("windows", jobs["pytest-windows"]), ("linux", jobs["pytest-linux"])):
         assert "uses: actions/setup-python@" in job and "cache: pip" in job
         assert "cache-dependency-path: |\n            requirements.txt\n            requirements.lock" in job
@@ -209,7 +209,7 @@ def _uses_lines(text: str) -> list:
 
 def test_every_uses_is_pinned_to_a_full_sha_with_tag_comment():
     uses = _uses_lines(_wf_text())
-    assert len(uses) == 6                                           # 3 действия x 2 джоба
+    assert len(uses) == 11                                          # 3 действия x 2 джоба pytest + 5 в control-map
     for ref, tail in uses:
         m = _PIN_RE.match(ref)
         assert m, f"не закреплено полным SHA: {ref}"
@@ -236,3 +236,61 @@ def test_both_jobs_use_the_same_pinned_actions():
 def test_pin_check_rejects_tags_short_sha_and_missing_comment(bad):
     (ref, tail), = _uses_lines(bad + "\n")
     assert not (_PIN_RE.match(ref) and _TAG_COMMENT_RE.match(tail))
+
+
+# --- B32h: job control-map -- карта по JUnit ОБЕИХ платформ и свежесть docs/CONTROL_MAP.md -------------------------
+_CM_ARGS = ("--junit windows=reports/windows/pytest_src.xml", "--junit windows=reports/windows/pytest_extra.xml",
+            "--junit linux=reports/linux/pytest_src.xml", "--junit linux=reports/linux/pytest_extra.xml",
+            "--check-md docs/CONTROL_MAP.md")
+
+
+def _control_map_job_problems(text: str) -> list:
+    """Что в job control-map не так (пусто = в порядке): нужны оба джоба pytest, запуск даже после их провала, отчёты
+    обеих платформ из их артефактов, сверка карты, код выхода верификатора = код шага, без поблажек и секретов."""
+    jobs = _job_blocks(text)
+    if "control-map" not in jobs:
+        return ["нет job control-map"]
+    j = jobs["control-map"]
+    p = []
+    if "needs: [pytest-windows, pytest-linux]" not in j:
+        p.append("needs не оба джоба pytest")
+    if "if: always()" not in j.split("steps:", 1)[0]:
+        p.append("job не запускается после провала джоба pytest")
+    for plat in ("windows", "linux"):
+        if f"name: pytest-reports-{plat}\n          path: reports/{plat}" not in j:
+            p.append(f"нет артефакта {plat}")
+    flat = " ".join(x.strip().rstrip("\\").strip() for x in j.splitlines())
+    for a in _CM_ARGS:
+        if a not in flat:
+            p.append(f"нет аргумента: {a}")
+    if "rc=$?" not in j or "exit $rc" not in j:
+        p.append("код выхода верификатора не становится кодом шага")
+    if "both_platforms=${both} EXIT=${rc}" not in j:
+        p.append("нет аннотации с итогом")
+    for bad in ("continue-on-error", "|| true", "secrets.", "write-all", "permissions:"):
+        if bad in j:
+            p.append(f"запрещено в job: {bad}")
+    return p
+
+
+def test_control_map_job_checks_both_platforms_and_the_map():
+    assert _control_map_job_problems(_wf_text()) == []
+    assert "permissions:\n  contents: read\n" in _wf_text()                     # токен только на чтение (весь файл)
+
+
+@pytest.mark.parametrize("old,new", [
+    ("needs: [pytest-windows, pytest-linux]", "needs: [pytest-linux]"),
+    ("    if: always()\n    runs-on: ubuntu-latest", "    runs-on: ubuntu-latest"),
+    (" --junit linux=reports/linux/pytest_src.xml", ""),
+    (" --check-md docs/CONTROL_MAP.md", ""),
+    ("          exit $rc\n", "          exit 0\n"),
+    ("    timeout-minutes: 10\n    env:\n      PYTHONIOENCODING: utf-8\n    ", "    timeout-minutes: 10\n    continue-on-error: true\n    env:\n      PYTHONIOENCODING: utf-8\n    "),
+])
+def test_liar_control_map_job_spoiled_is_caught(old, new):
+    """Тест-лжец: испорченный job (один джоб в needs, нет always, одна платформа, нет сверки карты, код шага 0,
+    continue-on-error) обязан дать находку."""
+    text = _wf_text()
+    j0 = text.index("\n  control-map:\n")
+    assert text.count(old, j0) == 1, old
+    bad = text[:j0] + text[j0:].replace(old, new, 1)
+    assert _control_map_job_problems(bad) != []
