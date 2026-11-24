@@ -53,23 +53,31 @@
   вызовов модели (F1); предохранитель `CircuitBreaker` отклоняет запросы при
   массовых нарушениях; 14 служебных кодов `[ERR: …]` с фиксированным уровнем
   лога («светофор»), см. `docs/kernel_codes.txt`.
-- **Игровой режим.** `game_watcher.ps1`: при запуске игры из `games.txt`
-  останавливает бота и выгружает модель из VRAM, после закрытия — поднимает.
+- **Игровой режим.** `game_watcher.ps1` (v2): пока идёт игра из `games.txt`, бот
+  продолжает работать (устройства, ТВ, Garmin, печать), а модели выгружаются из VRAM.
+  Вопросы к модели в это время получают ответ-заглушку (`src/game_mode.py`, режим `sleep`);
+  `/force_brain [минуты|off]` временно включает модель. `OKO_GAME_MODE=0` отключает режим.
 
 ## Архитектура
 
-```
-Telegram ──► src/bot.py ──► DataHygieneFilter ──► AgentGovernor ──► Ollama
-                │   (allowlist,        (маскирует        │  (судья, коррекция,
-                │    /memory, /forget)  ключи/токены)    │   CircuitBreaker)
-                ├── MemoryCore (data/memory/memory.db)   └── RAG: oko_rag/ (ChromaDB)
-                └── staging: кнопки Approve/Reject
-data/knowledge/ ──► src/run_system.py (watcher) ──► staging ──► knowledge_indexer
-game_watcher.ps1 ──► stop/start OkoBot, unload модели из VRAM
-NSSM: службы OkoBot и OkoWatcher
+```mermaid
+flowchart LR
+    TG[Telegram] --> BOT["src/bot.py, allowlist ADMIN_USER_IDS"]
+    SHELL["Oko Shell, src/shell_channel.py, только loopback"] --> BOT
+    BOT --> ROUTER["src/router.py, правила раньше модели"]
+    ROUTER -->|команда устройству| DEV["src/tv_bot_handler.py, шлюз Σ src/sigma_gate.py"]
+    ROUTER -->|не взято правилами| HYG["DataHygieneFilter, src/data_hygiene.py"]
+    HYG --> GOV["AgentGovernor, src/governor.py: судья, CircuitBreaker"]
+    GOV --> OLLAMA[Ollama]
+    BOT --- MEM["MemoryCore, data/memory/memory.db"]
+    BOT --- RAG["ChromaDB oko_rag/ и knowledge_base.db"]
+    KN["data/knowledge/"] --> WATCH["src/run_system.py"] --> STG["staging, Approve/Reject в Telegram"] --> IDX["src/knowledge_indexer.py"] --> RAG
 ```
 
-Архитектурные инварианты движка — в `docs/INVARIANTS.md`; отдельные решения — `docs/ADR-*.md`.
+Службы Windows (NSSM, `setup_service.ps1`): `OkoBot` (`src/bot.py`) и `OkoWatcher` (`src/run_system.py`).
+Подробная карта модулей и потоков — `docs/ARCHITECTURE.md`; правила безопасности и честные пробелы —
+`docs/SECURITY.md`; архитектурные инварианты движка — `docs/INVARIANTS.md`; отдельные решения — `docs/ADR-*.md`;
+история изменений — `CHANGELOG.md`.
 
 ## Требования
 
@@ -115,10 +123,16 @@ python -m pytest src -q
 подставляет временный `AI_BASE_DIR`, фиктивный токен и пустой список админов.
 `test_enforce_compliance_live.py` и `scripts/` — ручные проверки на живой Ollama.
 
-CI (GitHub Actions, `.github/workflows/pytest.yml`) гоняет тот же набор в двух джобах — `pytest-windows`
-(windows-latest) и `pytest-linux` (ubuntu-latest), Python 3.12. Пропуски сверяются строго, по платформе:
-`.github/known_skips.txt` и `.github/known_skips_linux.txt` (на Linux дополнительно пропускаются только
-проверки прав доступа Windows); лишний или пропавший пропуск — красный джоб.
+CI (GitHub Actions, `.github/workflows/pytest.yml`) — три проверки:
+
+- `pytest-windows` (windows-latest) и `pytest-linux` (ubuntu-latest), Python 3.12: тот же набор `pytest src`
+  плюс `test_data_hygiene.py`, `tools/test_calibrate_sigma.py`, `tools/test_check_sigma_2e.py`. Пропуски
+  сверяются строго, по платформе: `.github/known_skips.txt` и `.github/known_skips_linux.txt` (на Linux
+  дополнительно пропускаются только проверки прав доступа Windows); ожидаемые падения — `.github/known_xfail.txt`;
+  лишний или пропавший пропуск — красный джоб.
+- `control-map` — после обоих джобов: карта контроля `docs/control_map.csv` по отчётам JUnit **обеих** платформ
+  (`tools/verify_control_map.py`) и сверка `docs/CONTROL_MAP.md` со свежей копией; код выхода не 0 — красный джоб.
+  Итог виден в аннотации проверки: `both_platforms=yes|no EXIT=<n>`.
 
 ## Известные ограничения
 
