@@ -526,7 +526,7 @@ def test_ast_judge_is_called_only_through_the_guarded_paths():
             users[a.attr].add(fn.name)
     assert users["_verify_compliance"] == {"_judge_call"}
     assert users["_judge_call"] == {"_enforce_compliance", "_judge_block_only"}
-    assert users["_judge_block_only"] == {"_enforce_compliance", "execute_discuss_request"}
+    assert users["_judge_block_only"] == {"_enforce_compliance", "execute_discuss_request", "_cjk_guard"}   # B33 v2 C2: повтор CJK -- через судью
 
 
 def test_passed_with_a_mark_is_gone_from_the_source():

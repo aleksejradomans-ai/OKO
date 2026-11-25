@@ -39,7 +39,7 @@ def _probe(tmp_path: Path, collector: bool) -> dict:
         "print(json.dumps({'mem': str(m), 'n': n, 'g6': g6.exists(), 'col': config.COLLECTOR,"
         " 'dir': str(config.COLLECTOR_DIR), 'ev': os.environ.get('OKO_EVENT_LOG')}))\n"
     )
-    r = subprocess.run([sys.executable, "-c", code], cwd=HERE, env=env, capture_output=True, text=True, timeout=60)
+    r = subprocess.run([sys.executable, "-c", code], cwd=HERE, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     assert r.returncode == 0, r.stderr[-800:]
     import json
     out = json.loads(r.stdout.strip().splitlines()[-1])

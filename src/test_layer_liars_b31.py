@@ -108,10 +108,10 @@ def gov(tmp_path, monkeypatch):
 
 def test_liar_L2_cjk_guard(gov):
     g, client = gov
-    client.post.side_effect = [_ok(DRIFT), _ok("PASS"), _ok("Используй Get-Service.")]
+    client.post.side_effect = [_ok(DRIFT), _ok("PASS"), _ok("Используй Get-Service."), _ok("PASS")]   # B33 v2 C2: + судья повтора
     assert asyncio.run(g.execute_request("how do I list services?")) == "Используй Get-Service."
     exactly_one("L2", "catch", "CJK_GUARD")
-    exactly_one("L2", "input", "JUDGE")
+    assert got()[("L2", "input", "JUDGE")] == 2            # B33 v2 C2: судья ответа + судья повтора CJK
     assert got()[("L2", "input", "MODEL")] == 2            # ответ + повтор сторожа
     exactly_one("L3", "input", "GOV_CHECK")
 

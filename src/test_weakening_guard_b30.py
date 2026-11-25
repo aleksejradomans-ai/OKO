@@ -7,6 +7,30 @@ from pathlib import Path
 import pytest
 
 import weakening_guard as wg
+# B33 attempt 4 (item 3): every child process of this test file gets a hermetic environment -- without the parent
+# variables that change Python / pytest / git (selfrun / Operator profile: PYTHONHOME, PYTHONPATH, PYTEST_ADDOPTS,
+# OKO_B33_*, OKO_NOTIFY_OFF, GIT_DIR ...), with UTF-8 stdio. tools/build_contour_guard.py: bare_child is red here.
+_DIRTY_ENV = ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONSAFEPATH", "PYTHONWARNINGS",
+              "PYTHONINSPECT", "PYTHONEXECUTABLE", "PYTHONNOUSERSITE", "PYTEST_ADDOPTS", "PYTEST_CURRENT_TEST",
+              "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_DEBUG", "OKO_NOTIFY_OFF", "OKO_SIGMA_LIVE",
+              "OKO_REQUEST_TS", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+              "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_CONFIG_PARAMETERS",
+              "GIT_CONFIG_COUNT", "GIT_CEILING_DIRECTORIES")
+
+
+def _henv(**extra) -> dict:
+    import os as _os
+    env = {k: v for k, v in _os.environ.items() if k.upper() not in _DIRTY_ENV
+           and not k.upper().startswith(("OKO_B33_", "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
+    env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1")
+    env.update(extra)
+    return env
+
+
+def _hrun(*a, **k):
+    k.setdefault("env", _henv())
+    return subprocess.run(*a, **k)
+
 
 CLI = Path(__file__).resolve().parent.parent / "tools" / "weakening_guard.py"
 P = "src/test_x.py"
@@ -118,8 +142,8 @@ def test_non_test_paths_ignored():
 
 
 def test_allow_list_parse_and_judge():
-    lines = ["# comment", "", "fewer_asserts:src/test_x.py::test_a | merged into test_b | 2026-11-21 | b30_merge_ok",
-             "new_skip:src/test_x.py::<module> | numpy optional | 2026-11-21 | b30_skip_ok"]
+    lines = ["# comment", "", "fewer_asserts:src/test_x.py::test_a | merged into test_b | 2026-11-21 | b30_merge_ok | 0123456789abcdef",
+             "new_skip:src/test_x.py::<module> | numpy optional | 2026-11-21 | b30_skip_ok | fedcba9876543210"]   # B33: + entry_sha16
     allow, errs = wg.parse_allow(lines)
     assert errs == [] and set(allow) == {"fewer_asserts:src/test_x.py::test_a", "new_skip:src/test_x.py::<module>"}
     j = wg.judge(["fewer_asserts:src/test_x.py::test_a", "removed_test:src/test_x.py::test_b"], allow)
@@ -139,7 +163,7 @@ def test_allow_list_bad_line_is_error(bad):
 
 
 def _git(d, *a):
-    subprocess.run(["git", "-C", str(d), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+    _hrun(["git", "-C", str(d), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
                     "-c", "commit.gpgsign=false", *a], check=True, capture_output=True)
 
 
@@ -167,7 +191,7 @@ def _repo(tmp_path, files_base, files_head, allow=None):
 
 
 def _cli(d, *extra):
-    r = subprocess.run([sys.executable, str(CLI), "--repo", str(d), *extra], capture_output=True)
+    r = _hrun([sys.executable, str(CLI), "--repo", str(d), *extra], capture_output=True)
     return r.returncode, r.stdout.decode("utf-8")
 
 
@@ -177,7 +201,7 @@ def test_cli_red_on_weakening_green_when_allowed(tmp_path):
     assert rc == 1 and "WEAKENING red fewer_asserts:src/test_x.py::test_a" in out and "red=1" in out
     (tmp_path / "r2").mkdir()
     d2 = _repo(tmp_path / "r2", {P: BASE}, {P: BASE.replace("    assert 2 == 2\n", "")},
-               allow="fewer_asserts:src/test_x.py::test_a | duplicate check | 2026-11-21 | b30_dup_ok\n")
+               allow="fewer_asserts:src/test_x.py::test_a | duplicate check | 2026-11-21 | b30_dup_ok | 0123456789abcdef\n")
     rc, out = _cli(d2)
     assert rc == 0 and "WEAKENING allowed fewer_asserts:src/test_x.py::test_a" in out and "red=0" in out
 

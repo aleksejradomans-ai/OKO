@@ -15,10 +15,15 @@
    имя с платформой, хранение 7 дней). Имена джобов не меняются (проверки защиты веток привязаны к ним).
 5. B27: каждый `uses:` в workflow закреплён полным 40-символьным SHA коммита действия с комментарием `# vX.Y.Z`
    (не тег: тег можно передвинуть); в обоих джобах -- одни и те же действия с одними и теми же SHA.
+6. B33 H1: job control-map сверяется с эталоном ЦЕЛИКОМ (sha256 нормализованного блока job: строки без комментариев,
+   без пустых, без пробелов в конце), а не подстроками; любое `if:` у job или у его шагов, кроме `always()`, --
+   находка. Правка job = новый эталон здесь (этот файл -- в охраняемой зоне сторожа ослабления, нужна строка согласия).
+   B33 H2.5 / H2.7: в обоих джобах pytest -- сторож с кодом базовой ревизии и мутационный smoke красной зоны.
 """
 from __future__ import annotations
 
 import ast
+import hashlib
 import re
 from pathlib import Path
 
@@ -239,19 +244,41 @@ def test_pin_check_rejects_tags_short_sha_and_missing_comment(bad):
 
 
 # --- B32h: job control-map -- карта по JUnit ОБЕИХ платформ и свежесть docs/CONTROL_MAP.md -------------------------
+_CM_STEP = "      - name: control map (both platforms) + map freshness\n"
 _CM_ARGS = ("--junit windows=reports/windows/pytest_src.xml", "--junit windows=reports/windows/pytest_extra.xml",
             "--junit linux=reports/linux/pytest_src.xml", "--junit linux=reports/linux/pytest_extra.xml",
             "--check-md docs/CONTROL_MAP.md")
 
 
-def _control_map_job_problems(text: str) -> list:
+# B33 H1.1: эталон job control-map -- sha256 нормализованного блока (см. _cm_job_norm). Меняется только вместе с job.
+_CM_JOB_SHA256 = "27ad709a1a5265fe681df8406d90d191d2847715a6369a743cb34eb65c071adc"  # B33 attempt 4: verdict line grep in English (ASCII rule)
+_IF_RE = re.compile(r"^\s*(?:-\s+)?if:\s*(.*?)\s*$")
+
+
+def _cm_job_norm(j: str) -> str:
+    """Блок job (из _job_blocks: без строк-комментариев) -> строки без пробелов в конце, без пустых строк."""
+    return "\n".join(x.rstrip() for x in j.splitlines() if x.strip())
+
+
+def _cm_job_sha256(text: str) -> str:
+    return hashlib.sha256(_cm_job_norm(_job_blocks(text).get("control-map", "")).encode("utf-8")).hexdigest()
+
+
+def _control_map_job_problems(text: str, check_hash: bool = True) -> list:
     """Что в job control-map не так (пусто = в порядке): нужны оба джоба pytest, запуск даже после их провала, отчёты
-    обеих платформ из их артефактов, сверка карты, код выхода верификатора = код шага, без поблажек и секретов."""
+    обеих платформ из их артефактов, сверка карты, код выхода верификатора = код шага, без поблажек и секретов.
+    B33: блок job = эталон (sha256), любое условие `if:` у job и шагов -- только `always()`."""
     jobs = _job_blocks(text)
     if "control-map" not in jobs:
         return ["нет job control-map"]
     j = jobs["control-map"]
     p = []
+    if check_hash and _cm_job_sha256(text) != _CM_JOB_SHA256:
+        p.append("job control-map не совпадает с эталоном (sha256 нормализованного блока)")
+    for x in j.splitlines():
+        m = _IF_RE.match(x)
+        if m and m.group(1) != "always()":
+            p.append(f"условие не always(): {x.strip()}")
     if "needs: [pytest-windows, pytest-linux]" not in j:
         p.append("needs не оба джоба pytest")
     if "if: always()" not in j.split("steps:", 1)[0]:
@@ -285,12 +312,76 @@ def test_control_map_job_checks_both_platforms_and_the_map():
     (" --check-md docs/CONTROL_MAP.md", ""),
     ("          exit $rc\n", "          exit 0\n"),
     ("    timeout-minutes: 10\n    env:\n      PYTHONIOENCODING: utf-8\n    ", "    timeout-minutes: 10\n    continue-on-error: true\n    env:\n      PYTHONIOENCODING: utf-8\n    "),
+    # B33 H1.2: 4 порчи внешнего аудита 348e3b0 (§3 H1), которые прежний сторож подстрок пропускал
+    (_CM_STEP, _CM_STEP + "        if: false\n"),
+    ("> control_map_verify.txt 2>&1\n", "> control_map_verify.txt 2>&1 || :\n"),
+    ("          exit $rc\n", "          rc=0\n          exit $rc\n"),
+    ("    if: always()\n    runs-on: ubuntu-latest", "    if: always() && false\n    runs-on: ubuntu-latest"),
 ])
 def test_liar_control_map_job_spoiled_is_caught(old, new):
     """Тест-лжец: испорченный job (один джоб в needs, нет always, одна платформа, нет сверки карты, код шага 0,
-    continue-on-error) обязан дать находку."""
+    continue-on-error; B33: if: false у шага, `|| :`, rc=0 перед exit, if: always() && false у job) обязан дать находку."""
     text = _wf_text()
     j0 = text.index("\n  control-map:\n")
     assert text.count(old, j0) == 1, old
     bad = text[:j0] + text[j0:].replace(old, new, 1)
     assert _control_map_job_problems(bad) != []
+
+
+def test_control_map_job_equals_the_reference_hash():
+    """B33 H1.1: job control-map целиком = эталон (а не набор подстрок)."""
+    assert _cm_job_sha256(_wf_text()) == _CM_JOB_SHA256
+    assert _cm_job_norm("  a: 1  \n\n  b: 2\n") == "  a: 1\n  b: 2"
+
+
+@pytest.mark.parametrize("old,new", [
+    (_CM_STEP, _CM_STEP + "        if: false\n"),
+    (_CM_STEP, _CM_STEP + "        if: ${{ github.run_attempt > 9 }}\n"),
+    ("    if: always()\n    runs-on: ubuntu-latest", "    if: always() && false\n    runs-on: ubuntu-latest"),
+    ("    if: always()\n    runs-on: ubuntu-latest", "    if: success()\n    runs-on: ubuntu-latest"),
+])
+def test_liar_control_map_conditions_caught_even_without_the_hash(old, new):
+    """Правило «условие только always()» действует само по себе (не только через эталон)."""
+    text = _wf_text()
+    j0 = text.index("\n  control-map:\n")
+    bad = text[:j0] + text[j0:].replace(old, new, 1)
+    assert bad != text
+    assert any(x.startswith("условие не always()") for x in _control_map_job_problems(bad, check_hash=False))
+    assert _control_map_job_problems(text, check_hash=False) == []
+
+
+def test_workflow_line1_names_three_required_jobs():
+    """B33 H1.4: первая строка workflow -- три job, все обязательные (required check control-map включён 24.11)."""
+    first = _wf_text().splitlines()[0]
+    assert "three jobs, all required" in first and "two jobs" not in first
+
+
+def test_both_pytest_jobs_run_the_base_revision_guard_and_the_mutation_smoke():
+    """B33 H2.5 / H2.7: в обоих джобах pytest -- сторож с кодом родителя (git show HEAD~1:...) и smoke красной зоны."""
+    jobs = _job_blocks(_wf_text())
+    for name in ("pytest-windows", "pytest-linux"):
+        j = jobs[name]
+        i = j.index("- name: test weakening guard (code of the published base)")
+        step = j[i:j.index("- name:", i + 1)]
+        assert "shell: python" in step and "if: always()" in step
+        assert '"git", "show", base + ":" + rel' in step and '"merge-base", "HEAD", "refs/remotes/origin/oko-live"' in step   # B33 v2 C3
+        assert '("src/weakening_guard.py", "tools/weakening_guard.py")' in step
+        assert '"--base", base' in step and '"--head", "HEAD"' in step and "sys.exit(subprocess.run(cmd).returncode)" in step
+        assert "sys.exit(2)" in step                                                   # нет опубликованной базы -> красный
+        assert "run: python tools/weakening_guard.py --base auto --head HEAD --collect --allow .github/test_weakening_allow.txt" in j
+        k = j.index("- name: guard mutation smoke (red zone)")
+        step2 = j[k:j.index("- name:", k + 1)]
+        assert "run: python tools/guard_mutation_smoke.py --root ." in step2 and "if: always()" in step2
+        assert k < j.index("- name: pytest src")
+
+
+def test_b33v2_checkout_full_history_and_published_base():
+    """B33 v2 C3 (B32m D1): fetch-depth 0 во всех трёх job; верификатор -- база auto + обязательна; HEAD~1 нигде."""
+    text = _wf_text()
+    assert text.count("fetch-depth: 0") == 3 and "fetch-depth: 2" not in text
+    assert "HEAD~1" not in "\n".join(x for x in text.splitlines() if not x.lstrip().startswith("#"))
+    jobs = _job_blocks(text)
+    for name in ("pytest-windows", "pytest-linux", "control-map"):
+        assert "--base-rev auto --require-base" in " ".join(x.strip().rstrip("\\").strip() for x in jobs[name].splitlines()), name
+    for name in ("pytest-windows", "pytest-linux"):
+        assert "run: python tools/impl_mutation_smoke.py --root ." in jobs[name]

@@ -78,7 +78,8 @@ class Reader(threading.Thread):
 
 def main(n: int) -> int:
     box = C.tv_box()
-    tv = TVClient.from_env()
+    import sigma_live                                  # B33 v2 C1: боевой Σ -- проба мимо шлюза не пишет
+    tv = sigma_live.tv_client("cam_latency", TVClient.from_env)
     before = (tv.get_lounge_color() or {}).get("color", {})
     print(f"подсветка до проб: hue {before.get('hue')}, sat {before.get('saturation')}, bri {before.get('brightness')}")
     rd = Reader(C.rtsp_url(), box)

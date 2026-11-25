@@ -293,7 +293,7 @@ def test_b07b_collector_process_keeps_journal(tmp_path):
         " 'd0': d0, 'd1': d1, 'd2': d2, 'default': str(H.SHADOW_DEFAULT_PATH)}))\n"
     )
     r = subprocess.run([sys.executable, "-c", code], cwd=Path(H.__file__).resolve().parent, env=env,
-                       capture_output=True, text=True, timeout=60)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     assert r.returncode == 0, r.stderr[-800:]
     o = json.loads(r.stdout.strip().splitlines()[-1])
     assert o["col"] is True and o["ev"].startswith(o["cd"])          # режим сбора действительно включён

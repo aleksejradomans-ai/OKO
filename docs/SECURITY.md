@@ -33,19 +33,34 @@
 - Токен только на чтение: `permissions: contents: read` на весь файл; `persist-credentials: false` у checkout.
 - Все `uses:` закреплены полным SHA с тегом в комментарии; `src/test_ci_gate.py::test_every_uses_is_pinned_to_a_full_sha_with_tag_comment`
   ожидает ровно 11 таких строк (3 × 2 в джобах pytest + 5 в `control-map`).
-- Сторож ослабления тестов `tools/weakening_guard.py --base HEAD~1`: удалённый тест, меньше проверок, новый skip /
-  xfail, шире допуск — красный, если нет строки в `.github/test_weakening_allow.txt`. В `fdbb004` файл есть, но в нём
-  только три строки комментария (`#`) и ни одной разрешающей строки, поэтому любая находка — красная. Строка списка:
-  `<вид>:<путь>::<функция> | <причина> | <YYYY-MM-DD> | <код согласия>`; список читается из ревизии head (`git show`),
-  при отсутствии файла он считается пустым; плохая строка списка или нет родителя `HEAD~1` — код выхода 2 (красный).
+- Сторож ослабления тестов `tools/weakening_guard.py --base auto --collect` (B33 v2): база — ОПУБЛИКОВАННЫЙ коммит
+  (`git merge-base HEAD origin/oko-live`, checkout с `fetch-depth: 0`), а не `HEAD~1`, поэтому релиз из двух коммитов
+  не прячет первый; удалённый тест (и по собранным node ID), исчезнувшее значение parametrize (`changed_param`: в том
+  числе подмена значения при том же id), меньше проверок (`assert` с
+  константой — `assert True`, `assert x or True` — проверкой не считается), новый skip / xfail, шире допуск —
+  красный, если нет строки в `.github/test_weakening_allow.txt`. B33: охраняемая зона (`conftest.py`, `pytest.ini`,
+  `docs/control_map.csv`, `config/net_direct_registry.json`, `.github/workflows/`, код сторожа и верификатора,
+  `src/test_ci_gate.py`) — любая правка, исчезнувший из карты тест, новый `known_gap`, падение PASS в
+  `docs/CONTROL_MAP.md` — красный без строки в `.github/guarded_change_allow.txt`. Строка:
+  `<ключ> | <причина> | <YYYY-MM-DD> | <код согласия> | <entry_sha16>`; списки читаются из ревизии head (`git show`),
+  нет файла — пустой список; плохая строка, повтор ключа или `entry_sha16`, нет опубликованной базы (merge-base с
+  `origin/oko-live` не найден) или сбой `--collect` — код 2 (красный).
+- Что проверяет CI в строке согласия — честно: ТОЛЬКО формат и уникальность. Журнала согласий в CI нет; сверка
+  `entry_sha16` с журналом (`data/state/consent.db`) делается на ПК перед пушем (`tools/consent_lines.py` в
+  `push_*_stage`): строка, добавленная в блоке, без записи [1] в журнале — пуша нет.
+- Сторож запускается дважды: кодом снимка и кодом ОПУБЛИКОВАННОЙ БАЗЫ (`git show <merge-base>:...`), поэтому правка сторожа не может
+  разрешить сама себя и действует со следующего снимка. Мутационный smoke `tools/guard_mutation_smoke.py`: известные
+  порчи красной зоны (в том числе три аудитные) обязаны быть пойманы — иначе красный джоб.
 - Сторож живых часов в тестах — `src/clock_guard.py`, тест `src/test_clock_guard_b30.py`, исключения —
   `.github/live_clock_allow.txt`.
 - Пропуски и xfail сверяются со списками: `.github/known_skips.txt` (14), `.github/known_skips_linux.txt` (16),
   `.github/known_xfail.txt` (20); лишний или пропавший — красный джоб.
 - Job `control-map`: карта по JUnit обеих платформ и свежесть `docs/CONTROL_MAP.md`; код выхода верификатора —
-  код шага. `src/test_ci_gate.py::_control_map_job_problems` запрещает в этом job `continue-on-error`, `|| true`,
-  `secrets.`, `write-all`, `permissions:` и требует оба джоба в `needs`, `if: always()`, `exit $rc`;
-  `test_liar_control_map_job_spoiled_is_caught` проверяет, что испорченный job ловится.
+  код шага. B33: `src/test_ci_gate.py::_control_map_job_problems` сверяет job ЦЕЛИКОМ с эталоном (sha256
+  нормализованного блока), любое `if:` у job и его шагов, кроме `always()`, — находка; плюс прежние запреты
+  (`continue-on-error`, `|| true`, `secrets.`, `write-all`, `permissions:`). `test_liar_control_map_job_spoiled_is_caught`
+  проверяет 10 порч (6 прежних и 4 из внешнего аудита: `if: false` у шага, `|| :`, `rc=0` перед `exit $rc`,
+  `if: always() && false` у job). Правка `.github/workflows/` без строки согласия — нарушение верификатора карты.
 
 ## 4. Статус инвариантов
 
@@ -63,6 +78,7 @@ PASS 10 · GAP 10 · MANUAL 1 · FAIL 0; коды ядра (`docs/kernel_codes.t
 | Потолок громкости 15 действует только для знаковых команд; «громче» и «громкость 20» им не ограничены. | INV-19, known_gap в `docs/control_map.csv` |
 | Без `OKO_SIGMA_SHADOW=1` и `OKO_SIGMA_LIVE=1` вердикт Σ не считается и не пишется вовсе; INV-10 говорит «только считается и пишется в журнал». | `src/tv_bot_handler.py::_execute`, `shadow_enabled` |
 | Сбой маршрутизатора отдаёт текст модели (fail-open к модели, не к устройству). | `src/bot.py::_route_reply`, `ROUTE_ERROR` |
+| Мимо судьи идут: служебный маркер целиком и режим ТОЛК (`/talk`, осознанно: только текст, привода нет). Повтор `CJK_GUARD` с B33 — через судью. | `src/governor.py::_cjk_guard`, `src/sandbox_talk.py`, `docs/ARCHITECTURE.md` §3 |
 | Песочница — не граница безопасности: диск и сеть дочернему процессу доступны; в живых службах не используется. | INV-21, known_gap |
 | Порядок «правила раньше модели» в `bot.py` для всех видов сообщений подтверждён только чтением исходника. | INV-02, known_gap |
 | SHA снимка, на котором сгенерирована карта, теперь только в артефакте `control-map`; артефакт хранится 7 дней (`retention-days: 7`). | `docs/CONTROL_MAP.md`, `.github/workflows/pytest.yml` |

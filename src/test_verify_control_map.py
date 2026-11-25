@@ -1,7 +1,7 @@
 """Тесты верификатора карты доказуемости (tools/verify_control_map.py, B32).
 
-На каждый вид FAIL -- негативный тест на поддельных csv / JUnit во временной папке: недостающий и лишний ID, нет файла,
-нет символа, SKIP, XFAIL, XPASS (метка xfail при «прошёл» в отчёте и сообщение strict), нет в отчёте, PASS только на
+На каждый вид FAIL -- негативный тест на поддельных csv / JUnit во временной папке: недостающий и лишний ID, missing file,
+missing symbol, SKIP, XFAIL, XPASS (метка xfail при «прошёл» в отчёте и сообщение strict), нет в отчёте, PASS только на
 одной платформе, плохой evidence, пустой scope, устаревшая карта, расхождение кодов ядра, source-scan под видом behavior.
 Тесты-лжецы: мутанты верификатора «XFAIL = PASS», «одного отчёта достаточно», «SKIP без known_gap = GAP» и «чтение
 исходника не проверяется» обязаны быть пойманы теми же сценариями.
@@ -13,11 +13,36 @@ from __future__ import annotations
 import csv
 import importlib.util
 import io
+import subprocess
 import sys
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
 
 import pytest
+# B33 attempt 4 (item 3): every child process of this test file gets a hermetic environment -- without the parent
+# variables that change Python / pytest / git (selfrun / Operator profile: PYTHONHOME, PYTHONPATH, PYTEST_ADDOPTS,
+# OKO_B33_*, OKO_NOTIFY_OFF, GIT_DIR ...), with UTF-8 stdio. tools/build_contour_guard.py: bare_child is red here.
+_DIRTY_ENV = ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONSAFEPATH", "PYTHONWARNINGS",
+              "PYTHONINSPECT", "PYTHONEXECUTABLE", "PYTHONNOUSERSITE", "PYTEST_ADDOPTS", "PYTEST_CURRENT_TEST",
+              "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_DEBUG", "OKO_NOTIFY_OFF", "OKO_SIGMA_LIVE",
+              "OKO_REQUEST_TS", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+              "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_CONFIG_PARAMETERS",
+              "GIT_CONFIG_COUNT", "GIT_CEILING_DIRECTORIES")
+
+
+def _henv(**extra) -> dict:
+    import os as _os
+    env = {k: v for k, v in _os.environ.items() if k.upper() not in _DIRTY_ENV
+           and not k.upper().startswith(("OKO_B33_", "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
+    env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1")
+    env.update(extra)
+    return env
+
+
+def _hrun(*a, **k):
+    k.setdefault("env", _henv())
+    return subprocess.run(*a, **k)
+
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOL = ROOT / "tools" / "verify_control_map.py"
@@ -150,53 +175,53 @@ def test_all_pass_on_both_platforms_exit_0(repo, capsys):
     rc, out = both(V, repo, capsys)
     assert rc == 0, out
     assert "ROW INV-01 PASS behavior" in out and "ROW INV-02 PASS integration" in out
-    assert "проверено на 2 платформах из 2" in out and "EXIT=0" in out
+    assert "checked on 2 platforms of 2" in out and "EXIT=0" in out
 
 
 def test_acceptance_block_at_most_15_lines_and_last(repo, capsys):
     rc, out = both(V, repo, capsys)
     lines = out.strip().splitlines()
-    i = lines.index("=== ПРИЁМКА control_map ===")
+    i = lines.index("=== ACCEPTANCE control_map ===")
     assert len(lines) - i <= 15 and lines[-1] == "EXIT=0"
-    assert any(x.startswith("дельта: база для дельты отсутствует") for x in lines[i:])
+    assert any(x.startswith("delta: no base for the delta") for x in lines[i:])
 
 
 # ---------------------------------------------------------------- 1. ID 1-в-1
 def test_missing_id_fails(repo, capsys):
     _csv(repo, [ROW1])
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "только в INVARIANTS.md ['INV-02']" in out
+    assert rc == 1 and "only in INVARIANTS.md ['INV-02']" in out
 
 
 def test_extra_id_fails(repo, capsys):
     _csv(repo, [ROW1, ROW2, "INV-03,src/mod.py::decide,src/test_mod.py::test_b,behavior,путь,"])
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "только в csv ['INV-03']" in out
+    assert rc == 1 and "only in csv ['INV-03']" in out
 
 
 def test_duplicate_id_fails(repo, capsys):
     _csv(repo, [ROW1, ROW2, ROW2])
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "повтор ID" in out
+    assert rc == 1 and "duplicate ID" in out
 
 
 def test_wrong_header_fails(repo, capsys):
     _csv(repo, [ROW1, ROW2], header="id,implementation,tests,evidence,scope,known_gap,status")
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "схема csv" in out
+    assert rc == 1 and "csv schema" in out
 
 
 # ---------------------------------------------------------------- 2. код
 def test_missing_file_fails(repo, capsys):
     _csv(repo, [ROW1.replace("src/mod.py", "src/nope.py"), ROW2])
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "нет файла src/nope.py" in out
+    assert rc == 1 and "missing file src/nope.py" in out
 
 
 def test_missing_symbol_fails(repo, capsys):
     _csv(repo, [ROW1.replace("Gate.before", "Gate.after"), ROW2])
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "нет символа Gate.after" in out
+    assert rc == 1 and "missing symbol Gate.after" in out
 
 
 @pytest.mark.parametrize("rel", ["tools/mod.py", "docs/mod.py", "src/../tools/mod.py"])
@@ -207,7 +232,7 @@ def test_implementation_outside_code_roots_fails(repo, capsys, rel):
     (repo / "docs" / "mod.py").write_text(MOD, encoding="utf-8")
     _csv(repo, [ROW1.replace("src/mod.py", rel), ROW2])
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "implementation вне корней src/, oko_rag/" in out
+    assert rc == 1 and "implementation outside the roots src/, oko_rag/" in out
 
 
 def test_implementation_in_oko_rag_root_accepted(repo, capsys):
@@ -223,7 +248,7 @@ def test_symbol_in_text_but_not_defined_fails(repo, capsys):
     (repo / "src" / "mod.py").write_text(MOD + "\n# def ghost(): pass\nX = 'def ghost'\n", encoding="utf-8")
     _csv(repo, [ROW1, ROW2.replace("::decide", "::ghost")])
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "нет символа ghost" in out
+    assert rc == 1 and "missing symbol ghost" in out
 
 
 # ---------------------------------------------------------------- 3. статусы JUnit
@@ -284,7 +309,7 @@ def test_xpass_non_strict_by_xfail_mark_fails(repo, capsys):
 def test_known_xfail_listed_test_fails(repo, capsys):
     (repo / ".github" / "known_xfail.txt").write_text("src/test_mod.py::test_b\n", encoding="utf-8")
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "в known_xfail" in out
+    assert rc == 1 and "in known_xfail" in out
 
 
 def test_parametrized_all_instances_must_pass(repo, capsys):
@@ -301,7 +326,7 @@ def test_parametrized_all_instances_must_pass(repo, capsys):
 
 def test_single_platform_never_pass(repo, capsys):
     rc, out = _run(V, repo, capsys, lin=dict(ALL_PASS))
-    assert rc == 0 and "проверено на 1 платформе из 2: PASS не выдаётся" in out
+    assert rc == 0 and "checked on 1 platform of 2: no PASS given" in out
     assert "ROW INV-01 PARTIAL" in out and " PASS behavior" not in out
 
 
@@ -318,19 +343,19 @@ def test_no_junit_is_usage_error(repo, capsys):
 def test_bad_evidence_fails(repo, capsys):
     _csv(repo, [ROW1.replace(",behavior,", ",unit,"), ROW2])
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "недопустимый evidence «unit»" in out
+    assert rc == 1 and "invalid evidence 'unit'" in out
 
 
 def test_empty_scope_fails(repo, capsys):
     _csv(repo, [ROW1.replace(",путь A,", ",,"), ROW2])
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "INV-01: пустой scope" in out
+    assert rc == 1 and "INV-01: empty scope" in out
 
 
 def test_manual_with_tests_fails_and_manual_needs_gap(repo, capsys):
     _csv(repo, [ROW1.replace(",behavior,", ",manual,"), "INV-02,,,manual,процесс,"])
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "INV-01: manual с тестами" in out and "INV-02: manual без known_gap" in out
+    assert rc == 1 and "INV-01: manual with tests" in out and "INV-02: manual without known_gap" in out
 
 
 def test_manual_row_is_manual(repo, capsys):
@@ -342,7 +367,7 @@ def test_manual_row_is_manual(repo, capsys):
 def test_source_scan_disguised_as_behavior_fails(repo, capsys):
     _csv(repo, [ROW1, ROW2.replace("test_b", "test_scan")])
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "читает исходник" in out and "это source-scan, не integration" in out
+    assert rc == 1 and "reads the source" in out and "this is source-scan, not integration" in out
     _csv(repo, [ROW1, ROW2.replace("test_b", "test_scan").replace("integration", "source-scan")])
     rc, out = both(V, repo, capsys)
     assert rc == 0, out
@@ -353,19 +378,19 @@ def test_kernel_codes_mismatch_fails(repo, capsys):
     (repo / "src" / "governor.py").write_text(GOVERNOR.replace('{"AAA_ONE"}', '{"AAA_ONE", "DDD_NEW"}'),
                                               encoding="utf-8")
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "только в коде ['DDD_NEW']" in out
+    assert rc == 1 and "only in the code ['DDD_NEW']" in out
 
 
 def test_kernel_codes_count_line_checked(repo, capsys):
     (repo / "docs" / "kernel_codes.txt").write_text(KERNEL.replace("Всего 3", "Всего 12"), encoding="utf-8")
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "в документе 12, в реестре 3" in out
+    assert rc == 1 and "document 12, registry 3" in out
 
 
 def test_kernel_registry_absent_is_gap_line_not_pass(repo, capsys):
     (repo / "src" / "governor.py").write_text("X = 1\n", encoding="utf-8")
     rc, out = both(V, repo, capsys)
-    assert "CODES GAP реестр кодов отсутствует, сверка не выполнена" in out and "коды ядра: GAP" in out
+    assert "CODES GAP code registry missing, check not done" in out and "kernel codes: GAP" in out
 
 
 # ---------------------------------------------------------------- 6. зоны и строки «что сломается»
@@ -373,13 +398,13 @@ def test_zone_missing_fails(repo, capsys):
     (repo / "docs" / "INVARIANTS.md").write_text(INVARIANTS.replace("| INV-02 | рабочая | — |\n", ""),
                                                  encoding="utf-8")
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "INV-02: зон в INVARIANTS.md 0" in out
+    assert rc == 1 and "INV-02: zones in INVARIANTS.md 0" in out
 
 
 def test_plain_line_missing_fails(repo, capsys):
     (repo / "docs" / "control_map_plain.csv").write_text("id,breaks\nINV-01,x\n", encoding="utf-8")
     rc, out = both(V, repo, capsys)
-    assert rc == 1 and "«что сломается» не 1-в-1" in out
+    assert rc == 1 and "'what breaks' not 1-to-1" in out
 
 
 # ---------------------------------------------------------------- 7. карта
@@ -388,7 +413,7 @@ def test_map_written_then_checked_ignoring_head_line(repo, capsys):
     rc, _ = both(V, repo, capsys, extra=["--write-md", str(md), "--generated-on", "aaaa"])
     assert rc == 0 and V.GEN_PREFIX + "aaaa" in md.read_text(encoding="utf-8")
     rc, out = both(V, repo, capsys, extra=["--check-md", "docs/CONTROL_MAP.md", "--generated-on", "bbbb"])
-    assert rc == 0 and "карта: совпадает со свежей" in out
+    assert rc == 0 and "map: equals the fresh one" in out
     head = md.read_text(encoding="utf-8").splitlines()[:6]
     assert len([x for x in head if x]) <= 6 and V.UNREVIEWED in head
 
@@ -398,7 +423,7 @@ def test_stale_map_fails(repo, capsys):
     both(V, repo, capsys, extra=["--write-md", str(md)])
     _csv(repo, [ROW1 + "новый пробел", ROW2])
     rc, out = both(V, repo, capsys, extra=["--check-md", "docs/CONTROL_MAP.md"])
-    assert rc == 1 and "карта устарела, перегенерируй" in out
+    assert rc == 1 and "map is stale, regenerate" in out
 
 
 def test_map_crlf_checkout_still_matches(repo, capsys):
@@ -425,7 +450,7 @@ def test_output_is_utf8_bytes_under_cp1251_stdout(repo, monkeypatch):
     monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="cp1251"))
     rc = V.run(["--root", str(repo), "--junit", f"windows={_junit(repo / 'w.xml', ALL_PASS)}",
                 "--junit", f"linux={_junit(repo / 'l.xml', ALL_PASS)}"])
-    assert rc == 0 and "ПРИЁМКА".encode("utf-8") in raw.getvalue()
+    assert rc == 0 and "ACCEPTANCE".encode("utf-8") in raw.getvalue()
 
 
 # ---------------------------------------------------------------- тесты-лжецы: мутанты верификатора
@@ -508,8 +533,8 @@ def test_repo_map_structure_symbols_codes_and_generated_map(tmp_path, capsys):
                                                                        "--base-rev", "HEAD"])
     out = capsys.readouterr().out
     assert rc == 0, out
-    assert "CODES PASS" in out and "карта: совпадает со свежей" in out
-    assert "проверено на 2 платформах из 2" in out and "нарушений: 0" in out
+    assert "CODES PASS" in out and "map: equals the fresh one" in out
+    assert "checked on 2 platforms of 2" in out and "violations: 0" in out
 
 
 def test_repo_map_has_every_evidence_counted_honestly():
@@ -546,7 +571,7 @@ def test_liar_spoiled_map_is_red(tmp_path, capsys):
     bad.write_text(md.replace("| PASS |", "| GAP |", 1), encoding="utf-8")
     rc = V.run(["--root", str(ROOT)] + _real_junit("windows", "linux") + ["--check-md", str(bad), "--base-rev", "HEAD"])
     out = capsys.readouterr().out
-    assert rc == 1 and "карта: УСТАРЕЛА" in out and "EXIT=1" in out
+    assert rc == 1 and "map: STALE" in out and "EXIT=1" in out
 
 
 def test_liar_one_platform_junit_is_red(capsys):
@@ -554,10 +579,10 @@ def test_liar_one_platform_junit_is_red(capsys):
     for p in ("windows", "linux"):
         rc = V.run(["--root", str(ROOT)] + _real_junit(p) + ["--check-md", "docs/CONTROL_MAP.md", "--base-rev", "HEAD"])
         out = capsys.readouterr().out
-        assert rc == 2 and "USAGE --write-md / --check-md только при отчётах всех платформ" in out
+        assert rc == 2 and "USAGE --write-md / --check-md only with the reports of all platforms" in out
         rc = V.run(["--root", str(ROOT)] + _real_junit(p) + ["--base-rev", "HEAD"])
         out = capsys.readouterr().out
-        assert "проверено на 1 платформе из 2: PASS не выдаётся" in out
+        assert "checked on 1 platform of 2: no PASS given" in out
         assert " PASS behavior" not in out and " PASS integration" not in out
 
 
@@ -578,3 +603,87 @@ def test_liar_red_zone_test_failing_on_one_platform_is_red(tmp_path, capsys):
                    ["--check-md", "docs/CONTROL_MAP.md", "--base-rev", "HEAD"])
         out = capsys.readouterr().out
         assert rc == 1 and f"ROW {row['id']} FAIL" in out and f"{t} [{plat}]: FAIL" in out, out
+
+
+# ---------------------------------------------------------------- B33 H1.3: правка workflow -- только со строкой согласия
+def _wgit(d: Path, *a: str) -> str:
+    import subprocess
+    r = _hrun(["git", "-C", str(d), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                        "-c", "commit.gpgsign=false", *a], check=True, capture_output=True)
+    return r.stdout.decode("utf-8").strip()
+
+
+def _wf_repo(repo: Path, allow: str = "", touch: bool = True) -> Path:
+    (repo / ".github" / "workflows").mkdir(parents=True)
+    (repo / ".github" / "workflows" / "pytest.yml").write_text("name: pytest\n", encoding="utf-8")
+    (repo / "src" / "weakening_guard.py").write_text((ROOT / "src" / "weakening_guard.py").read_text(encoding="utf-8"),
+                                                     encoding="utf-8")
+    _wgit(repo, "init", "-q")
+    _wgit(repo, "add", "-A")
+    _wgit(repo, "commit", "-q", "-m", "base")
+    if touch:
+        (repo / ".github" / "workflows" / "pytest.yml").write_text("name: pytest\n# changed\n", encoding="utf-8")
+    (repo / ".github" / "guarded_change_allow.txt").write_text(allow, encoding="utf-8")
+    _wgit(repo, "add", "-A")
+    _wgit(repo, "commit", "-q", "-m", "head")
+    return repo
+
+
+def _wf_run(repo: Path, capsys) -> tuple[int, str]:
+    rc = V.run(["--root", str(repo), "--base-rev", "HEAD~1",
+                "--junit", f"windows={_junit(repo / 'w.xml', dict(ALL_PASS))}",
+                "--junit", f"linux={_junit(repo / 'l.xml', dict(ALL_PASS))}"])
+    return rc, capsys.readouterr().out
+
+
+def test_b33_workflow_touched_without_consent_line_is_a_violation(repo, capsys):
+    """B33 H1.3 (тест-лжец к прежнему «тронут: ДА» для сведения): правка workflow без строки согласия -> нарушение."""
+    rc, out = _wf_run(_wf_repo(repo), capsys)
+    assert rc == 1 and "EXIT=1" in out
+    assert ".github/workflows touched: YES (.github/workflows/pytest.yml); consent: MISSING for 1 -- violation" in out
+    assert "ERROR .github/workflows touched without a consent line: guarded_change:.github/workflows/pytest.yml::<module>@" in out
+
+
+def test_b33_workflow_touched_with_consent_line_for_this_version_passes(repo, capsys):
+    r = _wf_repo(repo, touch=True)
+    blob = _wgit(r, "rev-parse", "HEAD:.github/workflows/pytest.yml")[:12]
+    line = f"guarded_change:.github/workflows/pytest.yml::<module>@{blob} | B33 H1 | 2026-11-24 | b33_wf | 0123456789abcdef\n"
+    (r / ".github" / "guarded_change_allow.txt").write_text(line, encoding="utf-8")
+    _wgit(r, "add", "-A")
+    _wgit(r, "commit", "-q", "--amend", "-m", "head")
+    rc, out = _wf_run(r, capsys)
+    assert rc == 0 and "consent: present" in out and "EXIT=0" in out, out
+
+
+@pytest.mark.parametrize("bad", [
+    "guarded_change:.github/workflows/pytest.yml::<module>@000000000000 | other version | 2026-11-24 | b33_wf | 0123456789abcdef",
+    "guarded_change:.github/workflows/pytest.yml::<module>@{blob} | no sha16 | 2026-11-24 | b33_wf",
+    "guarded_change:.github/workflows/pytest.yml::<module>@{blob} | bad sha16 | 2026-11-24 | b33_wf | XYZ",
+])
+def test_b33_workflow_consent_line_of_other_version_or_bad_format_is_a_violation(repo, capsys, bad):
+    r = _wf_repo(repo, touch=True)
+    blob = _wgit(r, "rev-parse", "HEAD:.github/workflows/pytest.yml")[:12]
+    (r / ".github" / "guarded_change_allow.txt").write_text(bad.replace("{blob}", blob) + "\n", encoding="utf-8")
+    _wgit(r, "add", "-A")
+    _wgit(r, "commit", "-q", "--amend", "-m", "head")
+    rc, out = _wf_run(r, capsys)
+    assert rc == 1 and "-- violation" in out
+
+
+def test_b33_workflow_untouched_needs_no_consent(repo, capsys):
+    rc, out = _wf_run(_wf_repo(repo, touch=False), capsys)
+    assert rc == 0 and ".github/workflows touched: no" in out
+
+
+def test_b33v2_require_base_without_published_commit_is_a_violation(repo, capsys):
+    """B33 v2 C3 (B32m D1): в CI база дельты обязательна (--base-rev auto --require-base); нет -> нарушение."""
+    r = _wf_repo(repo, touch=False)
+    rc = V.run(["--root", str(r), "--base-rev", "auto", "--require-base",
+                "--junit", f"windows={_junit(r / 'w.xml', dict(ALL_PASS))}", "--junit", f"linux={_junit(r / 'l.xml', dict(ALL_PASS))}"])
+    out = capsys.readouterr().out
+    assert rc == 1 and "delta base not determined" in out
+    _wgit(r, "update-ref", "refs/remotes/origin/oko-live", "HEAD~1")
+    rc = V.run(["--root", str(r), "--base-rev", "auto", "--require-base",
+                "--junit", f"windows={_junit(r / 'w.xml', dict(ALL_PASS))}", "--junit", f"linux={_junit(r / 'l.xml', dict(ALL_PASS))}"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "EXIT=0" in out, out

@@ -1,4 +1,4 @@
-# CI: the test suite of the public snapshot on clean Windows and Linux runners (two jobs, both required).
+# CI: the test suite of the public snapshot on clean Windows and Linux runners + the control map (three jobs, all required).
 # Same command as the local "pytest src" run on the exported snapshot; xfail ids must equal .github/known_xfail.txt,
 # skipped tests must equal the list of the platform: .github/known_skips.txt (windows-latest),
 # .github/known_skips_linux.txt (ubuntu-latest) -- an unexpected or a vanished skip fails the job.
@@ -7,12 +7,16 @@
 # an already checked commit (status checks are bound to the commit SHA), so a push to them starts no second run.
 # Test reports (txt + junit xml) are kept as run artifacts for 7 days; the 30 slowest tests are listed in the log.
 # Actions are pinned to a full commit SHA (release tag in the comment).
-# Checkout depth 2: the parent snapshot is needed by the test weakening guard (tools/weakening_guard.py); the live-clock
+# Checkout depth 0 (B33 v2): the base of the guard and of the map delta is the PUBLISHED commit (git merge-base HEAD
+# origin/oko-live), not HEAD~1, so a release of two commits cannot hide the first one; no base -> red step. The live-clock
 # guard of the tests runs inside the suite (src/test_clock_guard_b30.py, exceptions in .github/live_clock_allow.txt).
 # Control map (B32): each pytest job checks docs/control_map.csv against its own JUnit reports (a confirming test
 # that is not PASS -> red job), so the two required jobs green = every confirming test PASS on both platforms.
 # Job control-map (B32h), after both pytest jobs: the control map over BOTH platforms (a confirming test counts only
 # with PASS in the JUnit reports of both jobs) and docs/CONTROL_MAP.md against a fresh copy; EXIT != 0 -> red job.
+# B33: the weakening guard runs twice in each pytest job -- with the code of this snapshot and with the code of the
+# published base (B33 v2: git show <merge-base HEAD origin/oko-live>:..., so a change of the guard cannot certify itself;
+# it takes effect from the next snapshot) -- plus mutation smokes of the guard and of the red-zone implementation.
 name: pytest
 
 on:
@@ -41,7 +45,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 0
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
@@ -58,12 +62,51 @@ jobs:
           python -m pip install -c requirements.lock -r requirements.txt pytest pillow pypdf scipy python-docx openpyxl pyloudnorm PyQt6 pymupdf
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # Weakened tests vs the parent snapshot (HEAD~1): removed tests / asserts, new skips, wider tolerances; each
-      # finding is red unless listed in .github/test_weakening_allow.txt (test | reason | date | consent code).
-      - name: test weakening guard (parent snapshot)
+      # Weakened tests vs the published base (B33 v2: --base auto = merge-base HEAD origin/oko-live, fetch-depth 0; no
+      # base -> red): removed tests / asserts / collected node IDs / parametrize values, new skips, wider tolerances;
+      # each finding is red unless listed in .github/test_weakening_allow.txt (key | reason | date | code | entry_sha16).
+      - name: test weakening guard (published base)
         if: always()
         shell: cmd
-        run: python tools/weakening_guard.py --base HEAD~1 --head HEAD --allow .github/test_weakening_allow.txt
+        run: python tools/weakening_guard.py --base auto --head HEAD --collect --allow .github/test_weakening_allow.txt
+
+      # B33 (H2.5) + B33 v2 (C3): the same guard with its code taken from the BASE = the published commit (git
+      # merge-base HEAD origin/oko-live; none -> red): a change of the guard cannot certify itself; it takes effect
+      # from the next snapshot. Lists from this snapshot; --collect only when the base guard knows it.
+      - name: test weakening guard (code of the published base)
+        if: always()
+        shell: python
+        run: |
+          import os, subprocess, sys, tempfile
+          mb = subprocess.run(["git", "merge-base", "HEAD", "refs/remotes/origin/oko-live"], capture_output=True, text=True)
+          base = mb.stdout.strip()
+          if mb.returncode != 0 or not base:
+              print("WEAKENING_ERROR no published base (merge-base HEAD origin/oko-live) -- red")
+              sys.exit(2)
+          d = tempfile.mkdtemp(prefix="guard_base_")
+          for rel in ("src/weakening_guard.py", "tools/weakening_guard.py"):
+              os.makedirs(os.path.join(d, os.path.dirname(rel)), exist_ok=True)
+              with open(os.path.join(d, rel), "wb") as fh:
+                  fh.write(subprocess.run(["git", "show", base + ":" + rel], check=True, capture_output=True).stdout)
+          cmd = [sys.executable, os.path.join(d, "tools", "weakening_guard.py"), "--repo", ".", "--base", base,
+                 "--head", "HEAD", "--allow", ".github/test_weakening_allow.txt"]
+          if b"--collect" in open(os.path.join(d, "tools", "weakening_guard.py"), "rb").read():
+              cmd.append("--collect")
+          print("guard code and base:", base[:12])
+          sys.exit(subprocess.run(cmd).returncode)
+
+      # B33 (H2.7): known spoilings of the red zone (audit B32h H2 + the guarded zone) must all be caught by the guard.
+      - name: guard mutation smoke (red zone)
+        if: always()
+        shell: cmd
+        run: python tools/guard_mutation_smoke.py --root .
+
+      # B33 v2 (C5): mutations of the red-zone IMPLEMENTATION (volume cap, confirm TTL, Sigma live flag, host admin
+      # check, bypass flag) -- the confirming tests must turn red on each; control run green.
+      - name: implementation mutation smoke (red zone)
+        if: always()
+        shell: cmd
+        run: python tools/impl_mutation_smoke.py --root .
 
       # cmd, not pwsh: pwsh 7 puts its module paths into PSModulePath, and the Windows PowerShell 5.1 started by the
       # tests then cannot load Get-Acl / Get-FileHash.
@@ -126,7 +169,7 @@ jobs:
       - name: control map (this platform)
         if: always()
         shell: cmd
-        run: python tools/verify_control_map.py --junit windows=pytest_src.xml --junit windows=pytest_extra.xml
+        run: python tools/verify_control_map.py --junit windows=pytest_src.xml --junit windows=pytest_extra.xml --base-rev auto --require-base
 
       - name: Upload test reports
         if: always()
@@ -156,7 +199,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 0
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
@@ -181,10 +224,47 @@ jobs:
           python -m pip install -c requirements.lock -r requirements.txt pytest pillow pypdf scipy python-docx openpyxl pyloudnorm PyQt6 pymupdf
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: test weakening guard (parent snapshot)
+      - name: test weakening guard (published base)
         if: always()
         shell: bash
-        run: python tools/weakening_guard.py --base HEAD~1 --head HEAD --allow .github/test_weakening_allow.txt
+        run: python tools/weakening_guard.py --base auto --head HEAD --collect --allow .github/test_weakening_allow.txt
+
+      # B33 (H2.5) + B33 v2 (C3): the same guard with its code taken from the BASE = the published commit (git
+      # merge-base HEAD origin/oko-live; none -> red): a change of the guard cannot certify itself; it takes effect
+      # from the next snapshot. Lists from this snapshot; --collect only when the base guard knows it.
+      - name: test weakening guard (code of the published base)
+        if: always()
+        shell: python
+        run: |
+          import os, subprocess, sys, tempfile
+          mb = subprocess.run(["git", "merge-base", "HEAD", "refs/remotes/origin/oko-live"], capture_output=True, text=True)
+          base = mb.stdout.strip()
+          if mb.returncode != 0 or not base:
+              print("WEAKENING_ERROR no published base (merge-base HEAD origin/oko-live) -- red")
+              sys.exit(2)
+          d = tempfile.mkdtemp(prefix="guard_base_")
+          for rel in ("src/weakening_guard.py", "tools/weakening_guard.py"):
+              os.makedirs(os.path.join(d, os.path.dirname(rel)), exist_ok=True)
+              with open(os.path.join(d, rel), "wb") as fh:
+                  fh.write(subprocess.run(["git", "show", base + ":" + rel], check=True, capture_output=True).stdout)
+          cmd = [sys.executable, os.path.join(d, "tools", "weakening_guard.py"), "--repo", ".", "--base", base,
+                 "--head", "HEAD", "--allow", ".github/test_weakening_allow.txt"]
+          if b"--collect" in open(os.path.join(d, "tools", "weakening_guard.py"), "rb").read():
+              cmd.append("--collect")
+          print("guard code and base:", base[:12])
+          sys.exit(subprocess.run(cmd).returncode)
+
+      # B33 (H2.7): known spoilings of the red zone (audit B32h H2 + the guarded zone) must all be caught by the guard.
+      - name: guard mutation smoke (red zone)
+        if: always()
+        shell: bash
+        run: python tools/guard_mutation_smoke.py --root .
+
+      # B33 v2 (C5): mutations of the red-zone IMPLEMENTATION, as in the Windows job.
+      - name: implementation mutation smoke (red zone)
+        if: always()
+        shell: bash
+        run: python tools/impl_mutation_smoke.py --root .
 
       # bash with set +e: the report is printed before the exit code of pytest is returned (same as the cmd step).
       - name: pytest src
@@ -247,7 +327,7 @@ jobs:
       - name: control map (this platform)
         if: always()
         shell: bash
-        run: python tools/verify_control_map.py --junit linux=pytest_src.xml --junit linux=pytest_extra.xml
+        run: python tools/verify_control_map.py --junit linux=pytest_src.xml --junit linux=pytest_extra.xml --base-rev auto --require-base
 
       - name: Upload test reports
         if: always()
@@ -278,7 +358,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 0
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
@@ -301,12 +381,13 @@ jobs:
           python tools/verify_control_map.py \
             --junit windows=reports/windows/pytest_src.xml --junit windows=reports/windows/pytest_extra.xml \
             --junit linux=reports/linux/pytest_src.xml --junit linux=reports/linux/pytest_extra.xml \
-            --check-md docs/CONTROL_MAP.md --write-md control_map_fresh.md --generated-on "$GITHUB_SHA" > control_map_verify.txt 2>&1
+            --check-md docs/CONTROL_MAP.md --write-md control_map_fresh.md --generated-on "$GITHUB_SHA" \
+            --base-rev auto --require-base > control_map_verify.txt 2>&1
           rc=$?
           cat control_map_verify.txt
-          line=$(grep -m1 '^проверено на ' control_map_verify.txt)
+          line=$(grep -m1 '^checked on ' control_map_verify.txt)
           both=no
-          if grep -qx 'проверено на 2 платформах из 2' control_map_verify.txt; then both=yes; fi
+          if grep -qx 'checked on 2 platforms of 2' control_map_verify.txt; then both=yes; fi
           echo "::notice title=control-map::both_platforms=${both} EXIT=${rc} | ${line:-no verdict line}"
           exit $rc
 

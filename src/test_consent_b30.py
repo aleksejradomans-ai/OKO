@@ -10,6 +10,30 @@ from pathlib import Path
 import pytest
 
 import consent as cs
+# B33 attempt 4 (item 3): every child process of this test file gets a hermetic environment -- without the parent
+# variables that change Python / pytest / git (selfrun / Operator profile: PYTHONHOME, PYTHONPATH, PYTEST_ADDOPTS,
+# OKO_B33_*, OKO_NOTIFY_OFF, GIT_DIR ...), with UTF-8 stdio. tools/build_contour_guard.py: bare_child is red here.
+_DIRTY_ENV = ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONSAFEPATH", "PYTHONWARNINGS",
+              "PYTHONINSPECT", "PYTHONEXECUTABLE", "PYTHONNOUSERSITE", "PYTEST_ADDOPTS", "PYTEST_CURRENT_TEST",
+              "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_DEBUG", "OKO_NOTIFY_OFF", "OKO_SIGMA_LIVE",
+              "OKO_REQUEST_TS", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+              "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_CONFIG_PARAMETERS",
+              "GIT_CONFIG_COUNT", "GIT_CEILING_DIRECTORIES")
+
+
+def _henv(**extra) -> dict:
+    import os as _os
+    env = {k: v for k, v in _os.environ.items() if k.upper() not in _DIRTY_ENV
+           and not k.upper().startswith(("OKO_B33_", "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
+    env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1")
+    env.update(extra)
+    return env
+
+
+def _hrun(*a, **k):
+    k.setdefault("env", _henv())
+    return subprocess.run(*a, **k)
+
 
 CLI = Path(__file__).resolve().parent.parent / "tools" / "consent.py"
 NOW = dt.datetime(2026, 11, 21, 17, 0, 0)
@@ -118,7 +142,7 @@ def test_broken_database_is_ask(tmp_path):
 
 
 def _cli(*args):
-    r = subprocess.run([sys.executable, str(CLI), *args], capture_output=True)
+    r = _hrun([sys.executable, str(CLI), *args], capture_output=True)
     return r.returncode, json.loads(r.stdout.decode("utf-8").strip().splitlines()[-1])
 
 

@@ -195,6 +195,13 @@ def list_entries(db: Optional[Path] = None, task: Optional[str] = None, code: Op
         con.close()
 
 
+def find_entries(sha16s: Iterable[str], db: Optional[Path] = None) -> dict:
+    """B33 H2.6: {entry_sha16: строка журнала | None} -- есть ли запись с таким entry_sha16 (только чтение)."""
+    want = [str(x) for x in sha16s]
+    rows = {r["entry_sha16"]: r for r in list_entries(db)}
+    return {s: rows.get(s) for s in want}
+
+
 def verify(db: Optional[Path] = None) -> dict:
     """Цепочка целиком: seq 1..n без пропусков, prev = предыдущее звено, entry_sha16 и entry_id пересчитываются.
     -> {ok, rows, broken_seq (первое плохое звено | None), reason}."""

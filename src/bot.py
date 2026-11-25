@@ -1985,6 +1985,17 @@ def _talk_mode_text(user_id: int) -> str:
     return f"ТОЛК · СПАРРИНГ · READ-ONLY, автосброс через {int(left // 60)} мин"
 
 
+SIGMA_MISSING_STATUS = "Σ: модуль не загружен, боевой режим = HALT"
+
+
+def _sigma_status_line() -> str:
+    """B33 v2 C7 (claim_check п.5): /status называет боевой Σ без модуля шлюза первой строкой; иначе -- пусто."""
+    try:
+        return SIGMA_MISSING_STATUS + "\n\n" if tv_bot_handler.sigma_module_missing_live() else ""
+    except Exception:  # noqa: BLE001 - строка отчёта не роняет /status
+        return ""
+
+
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Админ-команда /status — снимок здоровья системы без чтения логов.
     Закрыта по умолчанию: без ADMIN_USER_IDS в .env команда не отвечает
@@ -2014,6 +2025,7 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     telemetry_text = await asyncio.to_thread(_telemetry_status_text)
 
     report = (
+        f"{_sigma_status_line()}"
         "KERNEL STATUS\n"
         f"status: {state['status']}\n"
         f"current_task: {state['current_task']}\n"
@@ -2715,15 +2727,25 @@ async def handle_garmin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 def _wol_again() -> None:
-    """CAM_VERIFY (03.11 17:24): по кадру экран не засветился после «включи телевизор» -- пакет пробуждения ещё раз."""
-    from tv_control import TVClient
-    TVClient.from_env().wake()
+    """CAM_VERIFY (03.11 17:24): по кадру экран не засветился после «включи телевизор» -- пакет пробуждения ещё раз.
+    B33 v2 C1: клиент -- только через sigma_live.tv_client (боевой Σ: повтора нет, строка WARNING)."""
+    import sigma_live
+    try:
+        tv = sigma_live.tv_client("wol_again")
+    except sigma_live.BypassRefused:
+        return
+    tv.wake()
 
 
 def _calib_auto():
-    """CALIB_AUTO (04.11): /cam calib auto -- бот гасит экран через меню ТВ, калибрует, возвращает экран."""
-    from tv_control import TVClient
-    return camera_watcher.calibrate_auto(TVClient.from_env())
+    """CALIB_AUTO (04.11): /cam calib auto -- бот гасит экран через меню ТВ, калибрует, возвращает экран.
+    B33 v2 C1: клиент -- только через sigma_live.tv_client (боевой Σ: отказ текстом, 0 записей)."""
+    import sigma_live
+    try:
+        tv = sigma_live.tv_client("calib_auto")
+    except sigma_live.BypassRefused as e:
+        return e.text, None
+    return camera_watcher.calibrate_auto(tv)
 
 
 def _cam_before_power_on() -> str:
@@ -2947,6 +2969,9 @@ async def post_init(app: Application) -> None:
     await asyncio.to_thread(_caps_apply, app)  # CAPS_CATALOG
     await asyncio.to_thread(event_log.init)    # EVENTS (этап C): хвост журнала событий
     logger.info("[HOST_ONLY] key=%s state=%s", host_only.HOST_KEY, host_only.state(config))   # без значения id
+    if tv_bot_handler.sigma_module_missing_live():   # B33 H3.2: боевой Σ без модуля шлюза -- ERROR + служебный код
+        from src.governor import report_sigma_module_missing
+        report_sigma_module_missing()
     if config.COLLECTOR:
         logger.warning("[COLLECTOR] ON: память/связки/события -> временная копия %s; оценки и база знаний выключены",
                        config.COLLECTOR_DIR)

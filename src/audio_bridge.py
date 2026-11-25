@@ -78,6 +78,7 @@ import math
 import os
 import sys
 import threading
+from pathlib import Path
 import time
 from dataclasses import dataclass
 
@@ -116,6 +117,9 @@ SAT = 255
 # положения источника: в сведённом стерео нет данных о том, где источник
 # находится, есть только соотношение каналов.
 
+
+# B33 v2 попытка 2 (ревизор G5): долгий процесс моста перечитывает флаг боевого Σ из .env перед каждой записью
+ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 def hue_to_rgb(hue: int, value: float = 1.0) -> tuple[int, int, int]:
     """Оттенок 0..255 (как в `ambilight/lounge`) -> RGB при полной
@@ -340,6 +344,10 @@ def _make_sender(tv, hue: int, sent: dict, latest: dict, lock, stop):
                     try:
                         tv.set_lounge_color(h, s, b)
                         sent["n"] += 1
+                    except PermissionError:            # sigma_live.BypassRefused (ревизор G5): стоп, не повторять
+                        sent["refused"] = sent.get("refused", 0) + 1
+                        stop.set()
+                        break
                     except Exception:
                         sent["fail"] += 1
                 else:
@@ -371,7 +379,8 @@ def run_soundcard(device: str | None, seconds: float, hue: int,
     if not dry_run:
         try:
             from tv_control import TVClient, TVError
-            tv = TVClient.from_env()
+            import sigma_live                          # B33 v2 C1: боевой Σ -- мимо шлюза не пишем
+            tv = sigma_live.tv_client("audio_bridge", TVClient.from_env, env_file=ENV_FILE)
             tv.set_ambilight_power(True)
             tv.set_ambilight_style("FOLLOW_COLOR", "MANUAL_HUE")
         except Exception as e:
@@ -411,7 +420,7 @@ def run_soundcard(device: str | None, seconds: float, hue: int,
     deadline = time.monotonic() + seconds
     try:
         with mic.recorder(samplerate=sr, channels=2, blocksize=frames) as rec:
-            while time.monotonic() < deadline:
+            while time.monotonic() < deadline and not stop.is_set():
                 data = rec.record(numframes=frames)
                 pcm = audio_meter.pcm16_from_float(data)
                 stats = audio_meter.analyze(pcm, channels=2, sample_rate=sr)
@@ -437,6 +446,9 @@ def run_soundcard(device: str | None, seconds: float, hue: int,
     finally:
         stop.set()
         worker.join(timeout=1.0)
+    if sent.get("refused"):                            # ревизор G5: боевой Σ включён во время работы моста
+        print(f"остановлено: {__import__('sigma_live').BYPASS_TEXT.format(path='audio_bridge')}")
+        return 3
 
     if selftest:
         _selftest_verdict(peak_dbfs, "sc")
@@ -468,7 +480,8 @@ def run_bridge(device: int | None, seconds: float, hue: int,
             print(f"нет tv_control: {e}")
             return 2
         try:
-            tv = TVClient.from_env()
+            import sigma_live                          # B33 v2 C1: боевой Σ -- мимо шлюза не пишем
+            tv = sigma_live.tv_client("audio_bridge", TVClient.from_env, env_file=ENV_FILE)
             tv.set_ambilight_power(True)
             if pixels:
                 # Поштучная запись работает только в expert: в lounge
@@ -478,6 +491,9 @@ def run_bridge(device: int | None, seconds: float, hue: int,
                 print(f"топология: {topology}")
             else:
                 tv.set_ambilight_style("FOLLOW_COLOR", "MANUAL_HUE")
+        except PermissionError as e:                   # B33 v2 C1: sigma_live.BypassRefused -- 0 записей
+            print(f"не запущено: {e}")
+            return 3
         except (TVError, ValueError) as e:
             print(f"телевизор недоступен: {e}")
             return 1
@@ -544,6 +560,10 @@ def run_bridge(device: int | None, seconds: float, hue: int,
                             h, s, b = level_to_color(level, hue)
                             tv.set_lounge_color(h, s, b)
                         sent["n"] += 1
+                    except PermissionError:            # sigma_live.BypassRefused (ревизор G5): стоп, не повторять
+                        sent["refused"] = sent.get("refused", 0) + 1
+                        stop.set()
+                        break
                     except Exception:
                         sent["fail"] += 1
                 else:
@@ -592,7 +612,7 @@ def run_bridge(device: int | None, seconds: float, hue: int,
         with sd.InputStream(device=device, samplerate=sr, channels=channels,
                             dtype="int16", blocksize=frames,
                             callback=on_block, extra_settings=extra):
-            while time.monotonic() < deadline:
+            while time.monotonic() < deadline and not stop.is_set():
                 time.sleep(0.5)
                 with lock:
                     level = latest["level"]
@@ -621,6 +641,9 @@ def run_bridge(device: int | None, seconds: float, hue: int,
     finally:
         stop.set()
         worker.join(timeout=1.0)
+    if sent.get("refused"):                            # ревизор G5: боевой Σ включён во время работы моста
+        print(f"остановлено: {__import__('sigma_live').BYPASS_TEXT.format(path='audio_bridge')}")
+        return 3
 
     if selftest:
         _selftest_verdict(shared["peak_dbfs"], "sd")

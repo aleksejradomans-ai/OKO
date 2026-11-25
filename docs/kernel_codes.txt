@@ -40,9 +40,9 @@ UNCHECKED_AFTER_CORRECTION — повторная проверка не удал
 
 СЛУЖЕБНЫЕ КОДЫ ОШИБОК: ОБЩЕЕ
 
-Служебный код — маркер вида [ERR: КОД], который ядро возвращает вместо ответа и дословно пишет в лог. Всего 14 кодов. Уровень лога задан таблицей, вызывающий код не может его изменить.
+Служебный код — маркер вида [ERR: КОД], который ядро возвращает вместо ответа и дословно пишет в лог. Всего 15 кодов. Уровень лога задан таблицей, вызывающий код не может его изменить.
 Жёлтые коды (WARNING, process_watchdog их не считает): LLM_TIMEOUT, LLM_UNAVAILABLE, STAGNATION_BREAK, SYSTEM_DEGRADED, DISCUSS_TIMEOUT, JUDGE_UNPARSEABLE, JUDGE_ERROR, JUDGE_TOO_LONG.
-Красные коды (ERROR или CRITICAL, watchdog их считает): RETRY_LIMIT_EXCEEDED, RECOVERY_FAILED, KERNEL_FAULT, HALT_CONDITION, COMPLIANCE_UNRESOLVED.
+Красные коды (ERROR или CRITICAL, watchdog их считает): RETRY_LIMIT_EXCEEDED, RECOVERY_FAILED, KERNEL_FAULT, HALT_CONDITION, COMPLIANCE_UNRESOLVED, SIGMA_MODULE_MISSING.
 Смешанный код: DISCUSS_FAULT — жёлтый при транспортном сбое, иначе красный.
 
 КОДЫ: LLM_TIMEOUT И LLM_UNAVAILABLE
@@ -79,6 +79,12 @@ CLOSED — норма, запросы идут напрямую. OPEN — дег
 [ERR: KERNEL_FAULT] (красный, CRITICAL) — необработанное исключение в execute_request, то есть ошибка в самом ядре, а не в ответе модели.
 Статус ядра становится ERROR, в last_error пишется текст исключения, в лог — полный traceback.
 Что делать: найти строку KERNEL_FAULT в журнале ошибок службы бота и сообщить Оператору для разбора.
+
+КОД: SIGMA_MODULE_MISSING
+
+[ERR: SIGMA_MODULE_MISSING] (красный, ERROR) — на старте бота включён боевой режим шлюза Σ (OKO_SIGMA_LIVE=1), а модуль шлюза (sigma_gate) не загрузился. Пишется одной строкой при запуске.
+Пока модуль не вернут, команды телевизору не отправляются: каждая получает ответ «Σ: команда не отправлена (модуль Σ не загружен)». Теневой режим (OKO_SIGMA_LIVE не 1) без модуля работает прежним путём.
+Что делать: проверить зависимости окружения службы (сбой импорта цепочки sigma_gate -> abstraction_layer) и перезапустить службу после исправления.
 
 КОДЫ: JUDGE_UNPARSEABLE И COMPLIANCE_UNRESOLVED
 

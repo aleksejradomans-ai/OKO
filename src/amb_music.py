@@ -80,6 +80,7 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 HERE = Path(__file__).resolve().parent
+ENV_FILE = HERE.parent / ".env"          # B33 v2 попытка 2 (ревизор G5): флаг боевого Σ перечитывается мостом отсюда
 SIDES_RING = ("left", "top", "right")          # обход по кругу; снизу светодиодов нет (topology bottom 0)
 DEFAULT_TOPOLOGY = {"left": 3, "top": 7, "right": 3, "bottom": 0}
 STATIC, GRADIENT = "static", "gradient"
@@ -922,7 +923,12 @@ def _wait(status: Path, cond: Callable[[dict], bool], timeout: float, sleep=time
 def start(update: dict | None = None, *, control: Path | None = None, status: Path | None = None,
           spawn: Callable[[], Any] = _spawn, fallback: Callable[[], Any] = _spawn_service,
           timeout: float = 8.0, sleep=time.sleep) -> str:
-    """Включить (или обновить на лету). Ответ -- по файлу статуса моста, не по факту записи пульта."""
+    """Включить (или обновить на лету). Ответ -- по файлу статуса моста, не по факту записи пульта.
+    B33 v2 C1: боевой Σ (OKO_SIGMA_LIVE=1) -- мост мимо шлюза не запускается и не обновляется (отказ текстом)."""
+    import sigma_live
+    no = sigma_live.refusal("amb_bridge")
+    if no is not None:
+        return no
     if control is None or status is None:
         control, status = _paths()
     s = load_state(control)
@@ -1066,7 +1072,7 @@ def _want_mode(source: str) -> str:
 def _load_env() -> None:
     try:
         from dotenv import load_dotenv
-        load_dotenv(HERE.parent / ".env", override=False)
+        load_dotenv(ENV_FILE, override=False)
     except Exception:  # noqa: BLE001 - нет dotenv -- окружение уже от службы
         pass
 
@@ -1082,6 +1088,15 @@ def _put(status: Path, st: dict) -> None:
 
 def run() -> int:
     _load_env()
+    import sigma_live                                  # B33 v2 C1: флаг читается и в процессе моста (после .env)
+    if sigma_live.live():
+        sigma_live.refusal("amb_bridge")
+        try:
+            _put(_paths()[1], {"pid": os.getpid(), "running": False, "started": time.time(), "beat": time.time(),
+                               "frames": 0, "reason": sigma_live.BYPASS_TEXT.format(path="amb_bridge")})
+        except Exception:  # noqa: BLE001
+            pass
+        return 3
     if sys.stdout is None:                    # pythonw (задача планировщика): печать -- в журнал моста
         log = open(_paths()[0].with_name("amb_music.log"), "a", encoding="utf-8", buffering=1)  # noqa: SIM115
         sys.stdout = sys.stderr = log
@@ -1103,7 +1118,8 @@ def run() -> int:
     s = load_state(control)
     tv = prev = None
     try:
-        tv = TVClient.from_env()
+        import sigma_live
+        tv = sigma_live.tv_client("amb_bridge", TVClient.from_env, env_file=ENV_FILE)   # проверка перед КАЖДЫМ вызовом
         prev = {}
         for key, read in (("config", tv.get_ambilight_config), ("lounge", tv.get_lounge_color)):
             try:
@@ -1187,6 +1203,10 @@ def run() -> int:
     try:
         while True:
             now = time.monotonic()
+            if sigma_live.live_now(ENV_FILE):        # ревизор G5: боевой Σ включили во время работы -- стоп до записи
+                sigma_live.refusal("amb_bridge")
+                reason = sigma_live.BYPASS_TEXT.format(path="amb_bridge")
+                break
             if now - last_read >= 0.25:              # пульт: цвета/режим меняются на лету
                 last_read = now
                 try:
@@ -1288,6 +1308,9 @@ def run() -> int:
                     tv._call("POST", "ambilight/cached", {"layer1": frame(colors, v)})  # noqa: SLF001
                     st["frames"] += 1
                     last_lvl, last_ok = v, now
+                except PermissionError as e:          # sigma_live.BypassRefused: боевой Σ -- не повторять
+                    reason = getattr(e, "text", str(e))
+                    break
                 except Exception:  # noqa: BLE001
                     st["fails"] += 1
                     if now - last_ok > TV_SILENT_S:

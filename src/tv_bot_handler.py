@@ -36,9 +36,9 @@ from typing import Any, Callable, Iterable, Mapping
 
 import menu_syntax   # 05.11 MENU_SYNTAX: имена пунктов меню ТВ -> маршрут по карте
 try:                 # (16.11, фаза 3, этап 3d): шлюз Σ перед отправкой команды ТВ (теневой режим по умолчанию).
-    import sigma_gate    # Модуль приватен (ALLOWED_GAPS export_public): без него -- прежний путь исполнения.
+    import sigma_gate    # Модуль приватен (ALLOWED_GAPS export_public): без него -- прежний путь исполнения
 except ImportError:  # pragma: no cover - публичное зеркало без слоя Σ
-    sigma_gate = None
+    sigma_gate = None    # ТОЛЬКО в теневом режиме; при OKO_SIGMA_LIVE=1 -- HALT (B33 H3, fail-closed: _execute)
 import layer_events   # B31: L3 шлюз Σ, L4 команда ТВ, L5 сверка, L7 теневой журнал -- только коды
 import tv_commands
 import tv_intent
@@ -1103,6 +1103,22 @@ def _sigma_after(run: "_ShadowRun") -> None:
 
 
 SIGMA_HALT_TEXT = "⏸ Σ: команда не отправлена ({why}). Ничего не изменено."
+# B33 H3: флаг боевого режима читается из окружения и БЕЗ модуля sigma_gate (то же имя и правило, что
+# sigma_gate.LIVE_ENV / live_enabled): боевой режим без шлюза -- не «без проверки», а HALT.
+SIGMA_LIVE_ENV = "OKO_SIGMA_LIVE"
+SIGMA_MISSING_WHY = "модуль Σ не загружен"
+
+
+def _live_flag() -> bool:
+    """OKO_SIGMA_LIVE=1 запрошен (независимо от того, загрузился ли sigma_gate). B33 v2 C1: то же правило, что у
+    sigma_live.live() -- одна точка чтения флага для шлюза и для путей мимо него."""
+    import sigma_live
+    return sigma_live.live()
+
+
+def sigma_module_missing_live() -> bool:
+    """B33 H3.2: боевой режим запрошен, а модуля шлюза Σ нет -> команды ТВ не отправляются (проверка на старте бота)."""
+    return sigma_gate is None and _live_flag()
 SIGMA_PROBE_TEXT = ("⏸ Σ: тревога рассинхрона — команда не отправлена, выполнено только контрольное чтение "
                     "({reads}, удачных {ok}). {tail}")
 
@@ -1155,7 +1171,17 @@ def _execute(command: Command, tv_factory: Callable[[], Any]) -> str:
     шлюз Σ перед отправкой. Теневой режим (OKO_SIGMA_LIVE != 1, по умолчанию): вердикт пишется в строку
     outcome, команда -- по-старому (журнал выключен -> шлюз не вызывается вовсе). Боевой (OKO_SIGMA_LIVE=1): не
     EXECUTE -> не отправлять; A_t = 1 -> Active Probing."""
-    live = sigma_gate.live_enabled() if sigma_gate is not None else False
+    if sigma_gate is None:
+        # B33 H3.1 (fail-closed): боевой режим без модуля шлюза -> HALT, команда на ТВ не уходит. Теневой режим без
+        # модуля -- прежний путь (test_b08d_P4_without_sigma_module_old_path). Локальная команда ТВ не трогает.
+        if _live_flag() and command.kind != tv_nav.LOCAL_KIND:
+            # WARNING, не ERROR: строки ERROR считает process_watchdog (перезапуск модуль не вернёт); ERROR + код -- на старте
+            logger.warning("[SIGMA_GATE] OKO_SIGMA_LIVE=1, модуль sigma_gate не загружен: команда не отправлена (HALT)")
+            layer_events.record("L3", "catch", "SIGMA_HALT")
+            return SIGMA_HALT_TEXT.format(why=SIGMA_MISSING_WHY)
+        live = False
+    else:
+        live = sigma_gate.live_enabled()
     if command.kind == tv_nav.LOCAL_KIND or (not shadow_enabled() and not live):
         return _execute_core(command, tv_factory, None)
     layer_events.record("L3", "input", "SIGMA_CHECK")   # B31 L3: каждая проверка шлюзом Σ

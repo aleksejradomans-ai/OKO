@@ -836,8 +836,12 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = sys.argv[1:]
+    import sigma_live                                  # B33 v2 C1: боевой Σ -- CLI мимо шлюза не пишет
     try:
-        tv = TVClient.from_env()
+        tv = sigma_live.tv_client("tv_control_cli", TVClient.from_env)
+    except sigma_live.BypassRefused as e:
+        print(f"FAIL: {e.text}")
+        return 3
     except (TVError, ValueError) as e:
         print(f"FAIL: {e}")
         return 2

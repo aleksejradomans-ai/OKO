@@ -13,6 +13,30 @@ import sys
 from pathlib import Path
 
 import pytest
+# B33 attempt 4 (item 3): every child process of this test file gets a hermetic environment -- without the parent
+# variables that change Python / pytest / git (selfrun / Operator profile: PYTHONHOME, PYTHONPATH, PYTEST_ADDOPTS,
+# OKO_B33_*, OKO_NOTIFY_OFF, GIT_DIR ...), with UTF-8 stdio. tools/build_contour_guard.py: bare_child is red here.
+_DIRTY_ENV = ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONSAFEPATH", "PYTHONWARNINGS",
+              "PYTHONINSPECT", "PYTHONEXECUTABLE", "PYTHONNOUSERSITE", "PYTEST_ADDOPTS", "PYTEST_CURRENT_TEST",
+              "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_DEBUG", "OKO_NOTIFY_OFF", "OKO_SIGMA_LIVE",
+              "OKO_REQUEST_TS", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+              "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_CONFIG_PARAMETERS",
+              "GIT_CONFIG_COUNT", "GIT_CEILING_DIRECTORIES")
+
+
+def _henv(**extra) -> dict:
+    import os as _os
+    env = {k: v for k, v in _os.environ.items() if k.upper() not in _DIRTY_ENV
+           and not k.upper().startswith(("OKO_B33_", "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
+    env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1")
+    env.update(extra)
+    return env
+
+
+def _hrun(*a, **k):
+    k.setdefault("env", _henv())
+    return subprocess.run(*a, **k)
+
 
 SRC = Path(__file__).resolve().parent
 
@@ -62,12 +86,12 @@ def test_bot_sha16_helper():
 
 
 def _import_config(tmp_path, flag):
-    env = {k: v for k, v in os.environ.items() if k != "OKO_DIAG_LOG_TEXT"}
+    env = {k: v for k, v in _henv().items() if k != "OKO_DIAG_LOG_TEXT"}
     env.update({"AI_BASE_DIR": str(tmp_path / "secret_place" / "data"), "TELEGRAM_TOKEN": "test-token-not-real",
                 "ADMIN_USER_IDS": "", "PYTHONIOENCODING": "utf-8"})
     if flag is not None:
         env["OKO_DIAG_LOG_TEXT"] = flag
-    r = subprocess.run([sys.executable, "-c", "import config; print(config.DIAG_LOG_TEXT)"], cwd=str(SRC), env=env,
+    r = _hrun([sys.executable, "-c", "import config; print(config.DIAG_LOG_TEXT)"], cwd=str(SRC), env=env,
                        capture_output=True, timeout=120)
     return r.returncode, r.stdout.decode("utf-8", "replace"), r.stderr.decode("utf-8", "replace")
 

@@ -485,6 +485,10 @@ def calibrate_auto(tv, grab: Optional[Callable[[str], object]] = None, sleep: Ca
                    wait_s: float = DARK_WAIT_S) -> tuple[str, Optional[Path]]:
     """/cam calib auto: SCREEN_OFF_KEYS -> ждать тёмный экран по кадру -> сохранить углы -> Home.
     tv -- TVClient (send_key). Не бросает на сбоях ТВ/камеры: текст с номером шага. Пульт во время прогона не трогать."""
+    import sigma_live                                  # B33 v2 C1: боевой Σ -- кнопки меню мимо шлюза не жмём
+    no = sigma_live.refusal("calib_auto")
+    if no is not None:
+        return no, None
     if not enabled():
         raise RuntimeError("камера не настроена: нет OKO_CAM_HOST / OKO_CAM_USER в .env")
     if step_s is None:

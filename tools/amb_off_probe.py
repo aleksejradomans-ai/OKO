@@ -34,7 +34,8 @@ def state(tv) -> dict:
 
 
 def main(step: str) -> int:
-    tv = TVClient.from_env()
+    import sigma_live                                  # B33 v2 C1: боевой Σ -- проба мимо шлюза не пишет
+    tv = sigma_live.tv_client("amb_off_probe", TVClient.from_env)
     if step == "off":
         tv.set_ambilight_power(False)
     elif step == "on":

@@ -15,7 +15,8 @@ python -m pytest test_data_hygiene.py tools/test_calibrate_sigma.py tools/test_c
 
 - Успех: код возврата 0; ожидаемые падения — ровно `.github/known_xfail.txt`; пропуски — ровно
   `.github/known_skips.txt` (Windows) или `.github/known_skips_linux.txt` (Linux).
-- Сторож ослабления тестов: `python tools/weakening_guard.py --base HEAD~1 --head HEAD --allow .github/test_weakening_allow.txt`
+- Сторож ослабления тестов: `python tools/weakening_guard.py --base auto --head HEAD --collect --allow .github/test_weakening_allow.txt`
+  (база — опубликованный коммит: нужен `refs/remotes/origin/oko-live`)
   — 0 красных находок.
 
 ### По-человечески
@@ -35,10 +36,16 @@ python -m pytest test_data_hygiene.py tools/test_calibrate_sigma.py tools/test_c
   python tools/verify_control_map.py --junit windows=<win>/pytest_src.xml --junit windows=<win>/pytest_extra.xml --junit linux=<lin>/pytest_src.xml --junit linux=<lin>/pytest_extra.xml --check-md docs/CONTROL_MAP.md
   ```
 - Перегенерация карты после правки csv (те же `--junit`):
-  `... --write-md docs/CONTROL_MAP.md --generated-on <SHA родителя>`.
+  `... --write-md docs/CONTROL_MAP.md` — без `--generated-on` (строка «Сгенерирован на» без SHA) или
+  `--generated-on <SHA>` только с SHA ОПУБЛИКОВАННОГО снимка (`oko-live` / `main`). SHA родителя из локальной истории
+  может быть приватным коммитом — его в публичную карту не писать.
 - С одним отчётом верификатор печатает «проверено на 1 платформе из 2» и PASS не выдаёт.
-- В CI шаг `control map (this platform)` каждого джоба красный при любом подтверждающем тесте не в PASS;
-  оба обязательных джоба зелёные — каждый подтверждающий тест прошёл на обеих платформах.
+- В CI три обязательных job: `pytest-windows`, `pytest-linux` и `control-map`. Шаг `control map (this platform)`
+  каждого джоба pytest красный при любом подтверждающем тесте не в PASS на своей платформе; job `control-map` (после
+  обоих, `if: always()`) считает карту по JUnit ОБЕИХ платформ из их артефактов и сверяет `docs/CONTROL_MAP.md` со
+  свежей картой. Все три зелёные — каждый подтверждающий тест прошёл на обеих платформах и карта свежая.
+- Правка `.github/workflows/` без строки согласия охраняемой зоны (`.github/guarded_change_allow.txt`, см.
+  `docs/GUARDS.md`) — нарушение верификатора (B33).
 - Тест `src/test_verify_control_map.py` сверяет `docs/CONTROL_MAP.md` со свежей картой: карту не перегенерировали —
   красный тест.
 

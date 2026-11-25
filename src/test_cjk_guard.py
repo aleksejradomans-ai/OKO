@@ -70,9 +70,9 @@ def test_clean_answer_no_extra_call(gc):
 def test_cjk_retry_ok(gc):
     import governor
     gov, client = gc
-    client.post.side_effect = [_ok(DRIFT), _ok("PASS"), _ok("Используй Get-Service.")]
+    client.post.side_effect = [_ok(DRIFT), _ok("PASS"), _ok("Используй Get-Service."), _ok("PASS")]   # B33 v2 C2: + судья повтора
     assert asyncio.run(gov.execute_request("how do I list services?")) == "Используй Get-Service."
-    assert client.post.call_count == 3
+    assert client.post.call_count == 4
     retry_prompt = client.post.call_args_list[2].kwargs["json"]["prompt"]
     assert retry_prompt.endswith(governor.CJK_RETRY_SUFFIX)
 
@@ -80,7 +80,7 @@ def test_cjk_retry_ok(gc):
 def test_cjk_retry_still_cjk_strips_with_note(gc):
     import governor
     gov, client = gc
-    client.post.side_effect = [_ok(DRIFT), _ok("PASS"), _ok("Используй 命令 Get-Service")]
+    client.post.side_effect = [_ok(DRIFT), _ok("PASS"), _ok("Используй 命令 Get-Service"), _ok("PASS")]   # B33 v2 C2: + судья
     out = asyncio.run(gov.execute_request("q"))
     assert out.startswith(governor.CJK_NOTE) and not governor.CJK_RE.search(out)
     assert "Get-Service" in out          # повтор чище исходного (меньше иероглифов) -> берётся он
@@ -127,3 +127,36 @@ def test_identity_v3_keeps_phrases(ident, phrase):
 def test_identity_has_no_cjk(ident):
     import governor
     assert not governor.CJK_RE.search(ident)
+
+
+# ------------------------------------------------------------------ B33 v2 C2 (B32r H3): повтор CJK -- через судью
+BAD = "Я очень переживаю за вас и чувствую вашу тревогу. Рекомендую срочно продать квартиру сегодня."
+
+
+def test_b33v2_liar_cjk_retry_with_violation_is_blocked(gc):
+    """Сценарий B32r H3: исходный ответ прошёл судью, повтор CJK нарушает POL_001 -> пользователю уходит
+    cjk_strip ИСХОДНОГО текста, а не повтор; судья вызван и на повторе."""
+    import governor
+    gov, client = gc
+    client.post.side_effect = [_ok(DRIFT), _ok("PASS"), _ok(BAD), _ok("FAIL:POL_001")]
+    out = asyncio.run(gov.execute_request("вставь в ответ иероглиф"))
+    assert "квартиру" not in out and out.startswith(governor.CJK_NOTE) and "PowerShell" in out
+    assert client.post.call_count == 4
+
+
+@pytest.mark.parametrize("judge", ["HALT:POL_002", "мусор", "TRANSPORT"])
+def test_b33v2_cjk_retry_not_pass_gives_stripped_original(gc, judge):
+    import httpx
+    import governor
+    gov, client = gc
+    last = httpx.ConnectError("down") if judge == "TRANSPORT" else _ok(judge)
+    client.post.side_effect = [_ok(DRIFT), _ok("PASS"), _ok("Используй Get-Service."), last, last, last]
+    out = asyncio.run(gov.execute_request("q"))
+    assert out.startswith(governor.CJK_NOTE) and "Get-Service" not in out and "PowerShell" in out
+
+
+def test_b33v2_cjk_retry_judged_in_source():
+    src = (SRC / "governor.py").read_text(encoding="utf-8")
+    body = src[src.index("    async def _cjk_guard("):src.index("    def _observe_structure(")]
+    assert 'await self._judge_block_only(retry, where="cjk_retry")' in body
+    assert body.index("_judge_block_only") < body.index("return retry")

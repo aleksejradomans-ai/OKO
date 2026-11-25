@@ -520,6 +520,11 @@ def show(title: str, rows: list[tuple]) -> None:
 
 
 def main() -> int:
+    import sigma_live                                  # B33 v2 попытка 2 (ревизор G4): боевой Σ -- сырая запись в ТВ мимо шлюза
+    no = sigma_live.refusal("tv_probe_cli")
+    if no is not None:
+        print(no)
+        return 3
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default=None, help="IP телевизора (по умолчанию из tv_creds.json)")
     ap.add_argument("--keys-safe", action="store_true", help="нажать безопасные кнопки")

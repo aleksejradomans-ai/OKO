@@ -35,7 +35,7 @@ SRC_DIR = Path(__file__).resolve().parent
 YELLOW = {"LLM_TIMEOUT", "LLM_UNAVAILABLE", "STAGNATION_BREAK", "SYSTEM_DEGRADED",
           "DISCUSS_TIMEOUT", "JUDGE_UNPARSEABLE", "JUDGE_ERROR", "JUDGE_TOO_LONG"}
 RED = {"RETRY_LIMIT_EXCEEDED", "RECOVERY_FAILED", "KERNEL_FAULT", "HALT_CONDITION",
-       "COMPLIANCE_UNRESOLVED"}
+       "COMPLIANCE_UNRESOLVED", "SIGMA_MODULE_MISSING"}      # B33 H3.2: + SIGMA_MODULE_MISSING (красный)
 ALL_CODES = YELLOW | RED | {"DISCUSS_FAULT"}
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -137,7 +137,7 @@ class TestServiceCodesTable:
     def test_exactly_twelve_codes_with_expected_colors(self):
         import governor
         assert set(governor.SERVICE_CODES) == ALL_CODES
-        assert len(governor.SERVICE_CODES) == 14   # 20.11: + JUDGE_ERROR, + JUDGE_TOO_LONG
+        assert len(governor.SERVICE_CODES) == 15   # 20.11: + JUDGE_ERROR, + JUDGE_TOO_LONG; B33: + SIGMA_MODULE_MISSING
         assert set(governor.YELLOW_CODES) == YELLOW
         assert set(governor.RED_CODES) == RED
         assert set(governor.SPLIT_CODES) == {"DISCUSS_FAULT"}
@@ -267,6 +267,12 @@ def _sc_compliance_unresolved(gov, c):
     return run(gov.execute_request("q"))
 
 
+def _sc_sigma_module_missing(gov, c):
+    """B33 H3.2: старт бота при OKO_SIGMA_LIVE=1 без модуля шлюза Σ -- код пишет governor (одна строка ERROR)."""
+    import governor
+    return governor.report_sigma_module_missing()
+
+
 # (code, scenario, allowed levels)
 _WARN = {logging.WARNING}
 _RED = {logging.ERROR, logging.CRITICAL}
@@ -286,6 +292,7 @@ SCENARIOS = [
     ("JUDGE_ERROR", _sc_judge_error, _WARN),
     ("JUDGE_TOO_LONG", _sc_judge_too_long, _WARN),
     ("COMPLIANCE_UNRESOLVED", _sc_compliance_unresolved, _RED),
+    ("SIGMA_MODULE_MISSING", _sc_sigma_module_missing, _RED),
 ]
 
 

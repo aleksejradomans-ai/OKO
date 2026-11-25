@@ -119,6 +119,8 @@ def ctx_load_ms(data: dict) -> Optional[int]:
 # (жёлтый, технический сбой, как JUDGE_UNPARSEABLE: перезапуск процесса сторожем сбой судьи не лечит).
 # JUDGE_TOO_LONG (20.11): ответ не помещается в окно судьи даже по кускам (кусков больше потолка) -- ответ
 # не отдаётся и не усекается (жёлтый: это не нарушение и не сбой процесса).
+# SIGMA_MODULE_MISSING (B33, H3.2): на старте бота OKO_SIGMA_LIVE=1, а модуль шлюза Σ (sigma_gate) не загрузился --
+# команды ТВ не отправляются (HALT), пока модуль не вернут (красный: одна строка ERROR на старт; перезапуск не лечит).
 YELLOW_CODES = frozenset({
     "LLM_TIMEOUT", "LLM_UNAVAILABLE", "STAGNATION_BREAK",
     "SYSTEM_DEGRADED", "DISCUSS_TIMEOUT", "JUDGE_UNPARSEABLE", "JUDGE_ERROR",
@@ -126,7 +128,7 @@ YELLOW_CODES = frozenset({
 })
 RED_CODES = frozenset({
     "RETRY_LIMIT_EXCEEDED", "RECOVERY_FAILED", "KERNEL_FAULT", "HALT_CONDITION",
-    "COMPLIANCE_UNRESOLVED",
+    "COMPLIANCE_UNRESOLVED", "SIGMA_MODULE_MISSING",
 })
 SPLIT_CODES = frozenset({"DISCUSS_FAULT"})
 
@@ -172,6 +174,15 @@ def log_service_code(
     else:
         logger.log(level, "%s", marker, exc_info=exc_info)
     return marker
+
+
+def report_sigma_module_missing() -> str:
+    """B33 H3.2: одна строка ERROR со служебным кодом на старте бота (вызывает bot.post_init, если
+    tv_bot_handler.sigma_module_missing_live()). Текста пользователя и значений окружения в строке нет."""
+    return log_service_code(
+        "SIGMA_MODULE_MISSING",
+        "OKO_SIGMA_LIVE=1, модуль sigma_gate не загружен: команды ТВ не отправляются (HALT) до возврата модуля",
+    )
 
 
 # B31: служебный код -> (слой, вид, код слоя). Сбой связи с моделью и сбой судьи -- L2 fail; отказ предохранителя
@@ -840,8 +851,10 @@ class AgentGovernor:
 
     async def _cjk_guard(self, text: str, prompt: str) -> str:
         """CJK_GUARD (02.11, решение Оператора A): иероглифы в ответе -> один повтор с напоминанием;
-        снова иероглифы или сбой повтора -> иероглифы вырезаются + пометка. Повтор идёт мимо судьи:
-        исходный ответ его уже прошёл, меняется язык, не смысл."""
+        снова иероглифы или сбой повтора -> иероглифы вырезаются + пометка.
+        B33 v2 C2 (B32r H3): повтор -- НОВАЯ генерация, другой текст, поэтому он идёт через судью
+        (_judge_block_only, where=cjk_retry). Судья не дал PASS (нарушение, сбой, транспорт) -> отдаётся
+        cjk_strip ИСХОДНОГО, уже проверенного текста; непроверенный повтор пользователю не уходит."""
         if not text or is_service_marker(text):
             return text
         n = len(CJK_RE.findall(text))
@@ -857,11 +870,18 @@ class AgentGovernor:
             return cjk_strip(text)
         retry = (retry or "").strip()
         m = len(CJK_RE.findall(retry))
-        if retry and not m:
-            logger.info("[CJK_GUARD] cjk=%d retry=ok", n)
+        if not retry or m >= n:
+            logger.warning("[CJK_GUARD] cjk=%d retry=cjk:%d -> stripped original", n, m)
+            return cjk_strip(text)
+        checked = await self._judge_block_only(retry, where="cjk_retry")
+        if checked != retry:                                  # не PASS: маркер отказа / сбоя судьи
+            logger.warning("[CJK_GUARD] cjk=%d retry=judge_blocked -> stripped original", n)
+            return cjk_strip(text)
+        if not m:
+            logger.info("[CJK_GUARD] cjk=%d retry=ok judged", n)
             return retry
-        logger.warning("[CJK_GUARD] cjk=%d retry=cjk:%d -> stripped", n, m)
-        return cjk_strip(retry if retry and m < n else text)
+        logger.warning("[CJK_GUARD] cjk=%d retry=cjk:%d judged -> stripped", n, m)
+        return cjk_strip(retry)
 
     def _observe_structure(self, text: str, point: str, question: str = "") -> None:
         """Структурные проверки v1: ТОЛЬКО наблюдение (лог), поведение не меняется.

@@ -34,15 +34,17 @@ nt = _load()
 
 
 @pytest.fixture(autouse=True)
-def _no_outer_off_switch(monkeypatch):
+def _no_outer_off_switch(monkeypatch, tmp_path):
     """Внешнее окружение (пробный прогон ставит OKO_NOTIFY_OFF=1 всем дочерним процессам) не должно менять проверяемую
-    логику: каждый тест начинает без выключателя; тест выключателя ставит его сам."""
+    логику: каждый тест начинает без выключателя; тест выключателя ставит его сам. B33: запасной каталог данных
+    (<корень>/data/net/KILL) -- временный, живой рубильник ПК тесты не видят; тест рубильника ставит файл сам."""
     monkeypatch.delenv("OKO_NOTIFY_OFF", raising=False)
+    monkeypatch.setattr(nt, "ROOT", tmp_path / "fake_root")
 
 
 def _env(tmp_path: Path, token: str = TOKEN, ids: str = f"{OWNER}, {SECOND}") -> Path:
     p = tmp_path / ".env"
-    p.write_text(f"# test\nTELEGRAM_TOKEN={token}\nADMIN_USER_IDS={ids}\nOTHER=1\n", encoding="utf-8")
+    p.write_text(f"# test\nTELEGRAM_TOKEN={token}\nADMIN_USER_IDS={ids}\nOKO_HOST_USER_ID={OWNER}\nOTHER=1\n", encoding="utf-8")   # B33 v2 C6
     return p
 
 
@@ -190,7 +192,7 @@ def test_missing_credentials_not_sent_and_no_network(tmp_path, env_text, code):
 
 def test_env_parsing_quotes_export_comments(tmp_path):
     p = tmp_path / ".env"
-    p.write_text(f"﻿# c\nexport TELEGRAM_TOKEN=\"{TOKEN}\"\nADMIN_USER_IDS= {OWNER} ,{SECOND} # owner first\n",
+    p.write_text(f"﻿# c\nexport TELEGRAM_TOKEN=\"{TOKEN}\"\nADMIN_USER_IDS= {SECOND} ,{OWNER} # any order\nOKO_HOST_USER_ID=\"{OWNER}\"\n",
                  encoding="utf-8")
     assert nt.credentials(p) == (TOKEN, OWNER)
 
@@ -282,3 +284,107 @@ def test_bad_status_is_an_argument_error(tmp_path):
     with pytest.raises(SystemExit) as e:
         nt.main(["--status", "BLUE", "--text", "x", "--env", str(_env(tmp_path))])
     assert e.value.code == 2
+
+
+# --- B33 M1: рубильник сети KILL и расширенная маскировка ------------------------------------------------------------
+def _boom_net(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("сокет при рубильнике KILL")
+    monkeypatch.setattr(socket, "socket", boom)
+    monkeypatch.setattr(socket, "create_connection", boom)
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+
+
+@pytest.mark.parametrize("where", ["env_abs", "env_rel", "fallback"])
+def test_b33_kill_file_refuses_before_any_socket(tmp_path, monkeypatch, capsysbinary, where):
+    """KILL (<data>/net/KILL, как у шлюза) -> sent=no reason=kill, код 1, ни urlopen, ни сокета."""
+    env = _env(tmp_path)
+    if where == "env_abs":
+        data = tmp_path / "abs_data"
+        env.write_text(env.read_text(encoding="utf-8") + f"AI_BASE_DIR={data}\n", encoding="utf-8")
+    elif where == "env_rel":
+        data = tmp_path / "rel_data"
+        env.write_text(env.read_text(encoding="utf-8") + "AI_BASE_DIR=./rel_data\n", encoding="utf-8")
+    else:
+        data = nt.ROOT / "data"
+    (data / "net").mkdir(parents=True)
+    (data / "net" / "KILL").write_text("", encoding="utf-8")
+    _boom_net(monkeypatch)
+    rc = nt.main(["--status", "GREEN", "--text", "x", "--env", str(env)])
+    out = capsysbinary.readouterr().out.decode("utf-8")
+    assert rc == 1 and out.startswith("NOTIFY sent=no reason=kill: ")
+    h = FakeHTTP(_ok(5))
+    rc, line = nt.notify("GREEN", "x", env, opener=h)
+    assert rc == 1 and "reason=kill" in line and h.calls == []
+
+
+def test_b33_kill_paths_are_the_gateway_paths(tmp_path):
+    env = _env(tmp_path)
+    env.write_text(env.read_text(encoding="utf-8") + "AI_BASE_DIR=./d\n", encoding="utf-8")
+    assert nt.kill_files(env) == [tmp_path / "d" / "net" / "KILL", nt.ROOT / "data" / "net" / "KILL"]
+    assert nt.kill_files(tmp_path / "none.env") == [nt.ROOT / "data" / "net" / "KILL"]
+
+
+def test_b33_without_kill_file_sends(tmp_path):
+    h = FakeHTTP(_ok(6))
+    assert nt.notify("GREEN", "x", _env(tmp_path), opener=h) == (0, "NOTIFY sent=yes message_id=6") and len(h.calls) == 1
+
+
+BS = "\\"
+
+
+@pytest.mark.parametrize("raw,gone,mark", [
+    ("sha " + "ab" * 32, "ab" * 32, "sha abababa"),                                     # sha256, 64 hex
+    ("uuid " + "0123456789abcdef" * 2, "0123456789abcdef" * 2, "uuid 0123456"),         # ровно 32 hex
+    ("blob " + "f" * 40, "f" * 40, "blob fffffff"),                                     # 40 hex
+    ("at " + BS * 2 + "PC-IVAN" + BS + "share" + BS + "x.txt end", "PC-IVAN", "<unc> end"),
+    ("by OKO-PC" + BS + "ivan now", "ivan", "<user> now"),
+    ("file D:" + BS + "oko" + BS + "data" + BS + "secrets" + BS + "st.json end", "secrets", "file <path> end"),
+    ("file F:/data/store/x.db end", "data/store", "file <path> end"),
+    ("key /root/.ssh/id end", ".ssh", "key <path> end"),
+    ("conf /etc/passwd end", "passwd", "conf <path> end"),
+])
+def test_b33_mask_every_kind(raw, gone, mark):
+    t = nt.build_text("RED", raw)
+    assert gone not in t and mark in t, t
+
+
+@pytest.mark.parametrize("raw", [
+    "run B33 tests 6279 passed, commit abc1234 (short SHA stays)",
+    "ci/b33 and src/test_ci_gate.py and docs/RUNBOOK.md",
+    "3/5 jobs; ratio 1/2/3; PASS/FAIL",
+    "reply /promote 123456 within 30 min",
+    "https://api.telegram.org/bot/x is the API",
+    "hex 0123456789abcdef0123456789abcde (31 hex) stays",
+])
+def test_b33_mask_no_false_positives(raw):
+    assert nt.build_text("GREEN", raw) == "[GREEN] " + raw
+
+
+def test_b33_liar_masking_off_leaks_every_kind(monkeypatch):
+    """Тест-лжец: без маскировки абсолютный путь, UNC и полный хэш проходят -- проверки выше это обязаны видеть."""
+    raw = "D:" + BS + "oko" + BS + "x " + BS * 2 + "H" + BS + "s " + "ab" * 32
+    monkeypatch.setattr(nt, "mask_text", lambda s: str(s))
+    t = nt.build_text("RED", raw)
+    assert "ab" * 32 in t and "<path>" not in t and "<unc>" not in t
+
+
+# --- B33 v2 C6 (B32r M4): адресат -- только OKO_HOST_USER_ID, положительный и из ADMIN_USER_IDS --------------------------
+@pytest.mark.parametrize("host,admins,ok", [
+    (str(OWNER), f"{SECOND},{OWNER}", True),             # порядок админов не важен
+    (str(SECOND), f"{OWNER},{SECOND}", True),
+    ("", f"{OWNER}", False),                              # хозяин не задан -> первого админа НЕ берём
+    ("-100123", "-100123", False),                        # групповой чат (минус) -- не адресат
+    ("0", "0", False),
+    ("abc", f"{OWNER}", False),
+    ("777", f"{OWNER},{SECOND}", False),                  # хозяин не из админов
+])
+def test_b33v2_liar_recipient_only_host_in_admins(tmp_path, host, admins, ok):
+    p = tmp_path / ".env"
+    p.write_text(f"TELEGRAM_TOKEN={TOKEN}\nADMIN_USER_IDS={admins}\nOKO_HOST_USER_ID={host}\n", encoding="utf-8")
+    h = FakeHTTP(_ok(3))
+    rc, line = nt.notify("GREEN", "x", p, opener=h)
+    if ok:
+        assert rc == 0 and h.calls[0]["body"]["chat_id"] == int(host)
+    else:
+        assert rc == 1 and line.startswith("NOTIFY sent=no reason=no_chat: ") and h.calls == []

@@ -209,6 +209,11 @@ def pair(
 
 
 def main() -> int:
+    import sigma_live                                  # B33 v2 попытка 2 (ревизор G4): боевой Σ -- сырая запись в ТВ мимо шлюза
+    no = sigma_live.refusal("tv_pair_cli")
+    if no is not None:
+        print(no)
+        return 3
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     host = sys.argv[1] if len(sys.argv) > 1 else os.getenv("TV_HOST", "")
     if not host:

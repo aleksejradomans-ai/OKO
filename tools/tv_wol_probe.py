@@ -26,6 +26,9 @@ def magic(mac: str) -> bytes:
 
 
 def send(mac: str, targets) -> list[str]:
+    import sigma_live                                  # ревизор G4: пакет пробуждения -- запись в ТВ мимо шлюза
+    if sigma_live.refusal("tv_wol_probe") is not None:
+        raise sigma_live.BypassRefused("tv_wol_probe")
     pkt, sent = magic(mac), []
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -60,6 +63,11 @@ def port_open(host: str, port: int = 1926, timeout: float = 1.5) -> bool:
 
 
 def main() -> int:
+    import sigma_live                                  # B33 v2 попытка 2 (ревизор G4): боевой Σ -- сырая запись в ТВ мимо шлюза
+    no = sigma_live.refusal("tv_wol_probe")
+    if no is not None:
+        print(no)
+        return 3
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     mac = args[0] if args else C._env("TV_MAC")
     base = local_base()

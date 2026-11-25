@@ -55,9 +55,12 @@ flowchart TD
   `JUDGE_CHUNK_MAX` (по умолчанию 8, переменная `OKO_JUDGE_CHUNK_MAX`, `src/config.py`); больше — `JUDGE_TOO_LONG`.
 - Предохранитель качества — `CircuitBreaker(error_threshold=0.5, min_sample=10, cooldown_s=PROBE_COOLDOWN_S)`,
   `PROBE_COOLDOWN_S = 60.0`; предохранитель связи с Ollama — отдельный `TransportGate` (`src/transport_gate.py`).
-- Служебные коды — единый реестр `YELLOW_CODES` (8), `RED_CODES` (5), `SPLIT_CODES` (1); маркер `[ERR: КОД]`
-  выдаётся только через `log_service_code`, уровень лога берётся из реестра. Мимо судьи проходит только текст,
-  целиком равный одному известному маркеру (`is_service_marker`).
+- Служебные коды — единый реестр `YELLOW_CODES` (8), `RED_CODES` (6, с B33 — `SIGMA_MODULE_MISSING`), `SPLIT_CODES`
+  (1); маркер `[ERR: КОД]` выдаётся только через `log_service_code`, уровень лога берётся из реестра.
+- Пути ответа мимо судьи (B33, полный список): (1) текст, целиком равный одному известному маркеру
+  (`is_service_marker`); (2) режим ТОЛК (`/talk`, `src/sandbox_talk.py`, `src/bot.py`) — осознанно: только текст,
+  привода нет. Повтор `CJK_GUARD` (новая генерация) с B33 идёт через судью (`_judge_block_only`, `where=cjk_retry`):
+  судья не дал PASS — уходит исходный проверенный текст без иероглифов (`cjk_strip`).
 
 ## 4. Контур A — команды устройствам
 
@@ -116,7 +119,9 @@ flowchart LR
     CM --> V["tools/verify_control_map.py: JUnit обеих платформ, --check-md docs/CONTROL_MAP.md"]
 ```
 
-- Каждый джоб `pytest-*`: сторож ослабления тестов (`tools/weakening_guard.py --base HEAD~1`), `pytest src`,
+- Каждый джоб `pytest-*` (checkout `fetch-depth: 0`): сторож ослабления тестов (`tools/weakening_guard.py --base auto
+  --collect`, база — опубликованный коммит `merge-base HEAD origin/oko-live`) кодом снимка и кодом базы, smoke сторожа
+  и реализации, `pytest src`,
   тесты вне `src/` (`test_data_hygiene.py`, `tools/test_calibrate_sigma.py`, `tools/test_check_sigma_2e.py`),
   сверка xfail и пропусков со списками `.github/known_*.txt`, карта контроля по отчётам своей платформы.
 - Job `control-map` (`needs: [pytest-windows, pytest-linux]`, `if: always()`) скачивает артефакты

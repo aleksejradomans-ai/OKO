@@ -495,7 +495,7 @@ class _BridgeTV:
         self.mode = "internal"
 
 
-def _run_bridge(monkeypatch, tmp_path, sid, seconds=1.0, tv=None, until=None, cap=15.0):
+def _run_bridge(monkeypatch, tmp_path, sid, seconds=1.0, tv=None, until=None, cap=15.0, env_file=None, self_stop=False):
     """Мост работает не меньше seconds и дальше -- пока until(status, peak, tv) не выполнено (потолок cap, CI 20.11:
     на медленном раннере за фиксированную секунду мост не успевал). Проверки -- в тестах, без изменений."""
     import sys
@@ -519,6 +519,7 @@ def _run_bridge(monkeypatch, tmp_path, sid, seconds=1.0, tv=None, until=None, ca
     monkeypatch.setattr(M, "_paths", lambda: (c, s))
     monkeypatch.setattr(M, "session_id", lambda: sid)
     monkeypatch.setattr(M, "_load_env", lambda: None)
+    monkeypatch.setattr(M, "ENV_FILE", env_file or tmp_path / "no.env")   # B33 v2: мост перечитывает флаг Σ из .env
     M.save_state(c, M.State(on=True, music=True))
     _Stream.opened = 0
     th = threading.Thread(target=M.run, daemon=True)
@@ -532,6 +533,9 @@ def _run_bridge(monkeypatch, tmp_path, sid, seconds=1.0, tv=None, until=None, ca
             break
         t.sleep(0.02)
     peak = max(peak, _Stream.opened)
+    if self_stop:                         # мост встал сам (B33 v2 G5): дождаться выхода, потом писать пульт (без гонки)
+        th.join(10)
+        assert not th.is_alive(), "мост не остановился сам за 10 с"
     st = M.read_json(s)
     M.save_state(c, M.State(on=False))
     th.join(5)
@@ -660,6 +664,7 @@ def test_bridge_survives_status_and_control_races(monkeypatch, tmp_path):
     monkeypatch.setattr(M, "_paths", lambda: (c, s))
     monkeypatch.setattr(M, "session_id", lambda: 1)
     monkeypatch.setattr(M, "_load_env", lambda: None)
+    monkeypatch.setattr(M, "ENV_FILE", tmp_path / "no.env")             # B33 v2: не живой .env ПК
     M.save_state(c, M.State(on=True, music=False))
     th = threading.Thread(target=M.run, daemon=True)
     th.start()

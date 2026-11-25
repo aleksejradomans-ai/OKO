@@ -6,6 +6,30 @@ import ast
 import json
 import subprocess
 from pathlib import Path
+# B33 attempt 4 (item 3): every child process of this test file gets a hermetic environment -- without the parent
+# variables that change Python / pytest / git (selfrun / Operator profile: PYTHONHOME, PYTHONPATH, PYTEST_ADDOPTS,
+# OKO_B33_*, OKO_NOTIFY_OFF, GIT_DIR ...), with UTF-8 stdio. tools/build_contour_guard.py: bare_child is red here.
+_DIRTY_ENV = ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONSAFEPATH", "PYTHONWARNINGS",
+              "PYTHONINSPECT", "PYTHONEXECUTABLE", "PYTHONNOUSERSITE", "PYTEST_ADDOPTS", "PYTEST_CURRENT_TEST",
+              "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_DEBUG", "OKO_NOTIFY_OFF", "OKO_SIGMA_LIVE",
+              "OKO_REQUEST_TS", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+              "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_CONFIG_PARAMETERS",
+              "GIT_CONFIG_COUNT", "GIT_CEILING_DIRECTORIES")
+
+
+def _henv(**extra) -> dict:
+    import os as _os
+    env = {k: v for k, v in _os.environ.items() if k.upper() not in _DIRTY_ENV
+           and not k.upper().startswith(("OKO_B33_", "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
+    env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1")
+    env.update(extra)
+    return env
+
+
+def _hrun(*a, **k):
+    k.setdefault("env", _henv())
+    return subprocess.run(*a, **k)
+
 
 ROOT = Path(__file__).resolve().parent.parent
 NET = {"requests", "httpx", "urllib.request", "urllib3", "http.client", "http.server", "socket", "socketserver", "ssl",
@@ -17,7 +41,7 @@ NET = {"requests", "httpx", "urllib.request", "urllib3", "http.client", "http.se
 
 def scope_files() -> list[str]:
     try:
-        out = subprocess.run(["git", "ls-files", "*.py"], cwd=ROOT, capture_output=True, text=True, timeout=60)
+        out = _hrun(["git", "ls-files", "*.py"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         files = out.stdout.split() if out.returncode == 0 and out.stdout.strip() else None
     except (OSError, subprocess.SubprocessError):
         files = None

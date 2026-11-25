@@ -1,0 +1,14 @@
+# Consent lines of the guarded zone (tools/weakening_guard.py, B33 H2.2-H2.4): one line per finding of the zone.
+# <kind>:<path>::<what>@<blob12 | deleted> | <reason> | <YYYY-MM-DD> | <consent code> | <entry_sha16>
+# kinds: guarded_change, map_test_removed, map_new_known_gap, map_pass_drop. A line allows ONLY that version of the
+# file. CI checks the format and uniqueness only; entry_sha16 against the local consent journal -- before the stage push.
+guarded_change:.github/workflows/pytest.yml::<module>@e11ef284a057 | B33 H1.4 + H2.5 + H2.7 + v2 C3/C4/C5 + attempt 2 G8 + attempt 4 | 2026-11-25 | b33_guard_workflow | 2f80824e7dc8aa8a
+guarded_change:docs/control_map.csv::<module>@3525e45c25a8 | B33 v2 C1 + attempt 2 G3/G4 | 2026-11-25 | b33_guard_map | 742d1a5516bc8b53
+guarded_change:src/test_ci_gate.py::<module>@040c34cf347e | B33 H1.1 / H1.2 + v2 C3 + attempt 2 G8 + attempt 4 | 2026-11-25 | b33_guard_ci_gate | ebc365b0bf216ade
+guarded_change:src/weakening_guard.py::<module>@bac4949c23d6 | B33 H2.1-H2.4 + v2 C4 + attempt 2 G2 + attempt 4 | 2026-11-25 | b33_guard_wg_src | ed2dc75549fa3ccc
+guarded_change:tools/guard_mutation_smoke.py::<module>@cccbf154c2d6 | B33 H2.7 + attempt 2 G2 + attempt 3 + attempt 4 | 2026-11-25 | b33_guard_smoke | e5a3d8aba29febd8
+guarded_change:tools/impl_mutation_smoke.py::<module>@4a9297cf799f | B33 v2 C5 + attempt 3 + attempt 4 | 2026-11-25 | b33_guard_impl_smoke | c906992cb3f538c3
+guarded_change:tools/verify_control_map.py::<module>@f1dda133b02b | B33 H1.3 + v2 C3 + attempt 4 | 2026-11-25 | b33_guard_verifier | ea75885da0c7bfa1
+guarded_change:tools/weakening_guard.py::<module>@145abc056a3f | B33 H2.2 / H2.5 + v2 C3/C4 + attempt 2 G8 + attempt 3 + attempt 4 | 2026-11-25 | b33_guard_wg_tool | 1c9dfa2739a03ad6
+map_new_known_gap:docs/control_map.csv::INV-05@3525e45c25a8 | B33 v2 C1 + attempt 2 G3 | 2026-11-25 | b33_map_inv05_known_gap | dc59d446b9bb9f7d
+map_pass_drop:docs/CONTROL_MAP.md::<module>@577486a0c046 | B33 v2 C1 | 2026-11-25 | b33_map_pass_drop | bcf24685e4e6b29d

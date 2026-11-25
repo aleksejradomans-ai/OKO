@@ -1,3 +1,5 @@
 # Allowed weakening of tests (tools/weakening_guard.py, CI step 'test weakening guard'): one line per finding.
-# <kind>:<path>::<function> | <reason> | <YYYY-MM-DD> | <consent code of the Operator (journal of consents)>
+# <kind>:<path>::<function> | <reason> | <YYYY-MM-DD> | <consent code> | <entry_sha16 of the consent journal entry>
 # kinds: deleted_file, removed_test, fewer_asserts, new_skip, wider_tolerance. Empty list = no weakening allowed.
+# CI checks the format and uniqueness only; the entry_sha16 is checked against the local consent journal before the
+# stage push (tools/consent_lines.py). Guarded zone (conftest, workflows, map, guard code): .github/guarded_change_allow.txt
