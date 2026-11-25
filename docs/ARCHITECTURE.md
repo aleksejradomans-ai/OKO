@@ -79,6 +79,27 @@ flowchart LR
 - Ядро решений — `src/abstraction_layer.py` (`decide`, `guarded_decide`, `DissonanceIntegrator`); шлюз —
   `src/sigma_gate.py` (`Gate.before`, `Gate.after`, `Gate.probe`, `live_enabled`).
 - Без `OKO_SIGMA_SHADOW=1` и без `OKO_SIGMA_LIVE=1` шлюз не вызывается вовсе (`src/tv_bot_handler.py::_execute`).
+- Модуль шлюза необязателен при импорте (`sigma_gate = None`, если `import sigma_gate` не удался). С B33 это
+  fail-closed только для боевого режима: `OKO_SIGMA_LIVE=1` без модуля — команда ТВ не отправляется
+  (`SIGMA_HALT_TEXT`, причина «модуль Σ не загружен»; локальная команда `tv_nav.LOCAL_KIND` не затрагивается); на старте
+  бот пишет одну строку ERROR с кодом `SIGMA_MODULE_MISSING` (`bot.post_init` → `governor.report_sigma_module_missing`),
+  `/status` первой строкой называет это состояние (`bot._sigma_status_line`). Теневой режим без модуля идёт прежним путём.
+- Пути записи в ТВ мимо `_execute` (B33) — одна точка `src/sigma_live.py`:
+
+```mermaid
+flowchart LR
+    P["/cam calib auto, повтор пробуждения, мосты amb_music и audio_bridge, tv_control (CLI), tools/cam_latency.py, tools/amb_off_probe.py"] --> TC["sigma_live.tv_client"]
+    TC -->|"OKO_SIGMA_LIVE = 1"| BR["BypassRefused: клиент не создаётся, 0 записей"]
+    TC -->|иначе| GD["Guarded(TVClient): флаг проверяется перед КАЖДЫМ вызовом"]
+    RAW["src/tv_probe.py, src/tv_snapshot.py, src/tv_pair.py, tools/tv_wol_probe.py"] --> RF["sigma_live.refusal первой строкой main(): отказ, код возврата 3"]
+```
+
+- Флаг `sigma_live.live()` — то же правило, что `sigma_gate.live_enabled` (`OKO_SIGMA_LIVE` равно `1` в окружении
+  процесса). Долгие мосты (`amb_music`, `audio_bridge`) передают `env_file`: флаг — это окружение ИЛИ строка
+  `OKO_SIGMA_LIVE=1` в `.env` (перечитывается по mtime и размеру; файл не читается — боевой режим); боевой Σ, включённый
+  во время работы моста, останавливает следующую запись.
+- Охрана по AST — `src/test_b33v2_sigma_single_point.py`: клиент ТВ создаётся только в шлюзе, в `sigma_live.tv_client`
+  и в диагностике чтения `tools/oko_selfcheck.py::c_tv`; модуль с сырой записью в ТВ — только из списка выше.
 - Путь журнала — `OKO_SIGMA_SHADOW_PATH` или `logs/sigma_shadow.jsonl` (`SHADOW_DEFAULT_PATH`).
 - Знаковые команды «+N» / «−N» разбирает `tv_bot_handler.sign_route` до маршрутизатора; потолок громкости —
   `src/tv_commands.py::SIGN_VOLUME_MAX`.
@@ -121,9 +142,11 @@ flowchart LR
 
 - Каждый джоб `pytest-*` (checkout `fetch-depth: 0`): сторож ослабления тестов (`tools/weakening_guard.py --base auto
   --collect`, база — опубликованный коммит `merge-base HEAD origin/oko-live`) кодом снимка и кодом базы, smoke сторожа
-  и реализации, `pytest src`,
+  (`tools/guard_mutation_smoke.py`) и реализации красной зоны (`tools/impl_mutation_smoke.py`), `pytest src`,
   тесты вне `src/` (`test_data_hygiene.py`, `tools/test_calibrate_sigma.py`, `tools/test_check_sigma_2e.py`),
-  сверка xfail и пропусков со списками `.github/known_*.txt`, карта контроля по отчётам своей платформы.
+  сверка xfail и пропусков со списками `.github/known_*.txt`, карта контроля по отчётам своей платформы
+  (`tools/verify_control_map.py --base-rev auto --require-base`: правка `.github/workflows/` без строки согласия
+  охраняемой зоны — нарушение; базы нет — нарушение).
 - Job `control-map` (`needs: [pytest-windows, pytest-linux]`, `if: always()`) скачивает артефакты
   `pytest-reports-windows` и `pytest-reports-linux`, запускает верификатор по четырём отчётам JUnit и сверяет
   `docs/CONTROL_MAP.md` со свежей копией; код выхода верификатора становится кодом шага. Итог —

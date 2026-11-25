@@ -11,7 +11,7 @@
 | Доступ к боту | `src/bot.py::handle_message` | id отправителя не в `ADMIN_USER_IDS` — сообщение игнорируется; в лог пишутся только id и длина текста |
 | Режим хозяина (INV-07) | `src/host_only.py::is_host` | только по техническому id из окружения; текст сообщения роли не играет |
 | Окно на ПК | `src/shell_channel.py` | TCP только на loopback-адресе (константа `HOST`, не настраивается), ключ `OKO_SHELL_KEY`; пустой ключ — канал выключен |
-| Устройства (INV-05, INV-10) | `src/sigma_gate.py`, `src/tv_bot_handler.py::_execute` | боевой режим Σ — только при `OKO_SIGMA_LIVE=1`; иначе вердикт не останавливает команду |
+| Устройства (INV-05, INV-10) | `src/sigma_gate.py`, `src/tv_bot_handler.py::_execute`, `src/sigma_live.py` | боевой режим Σ — только при `OKO_SIGMA_LIVE=1`; иначе вердикт не останавливает команду. С B33 при `OKO_SIGMA_LIVE=1`: нет модуля `sigma_gate` — HALT (команда ТВ не уходит), пути записи в ТВ мимо шлюза отказывают (`BypassRefused`, код возврата 3 у утилит) |
 | Выход в интернет | `src/net_gateway.py` | закрыт, пока нет `OKO_NET_OPEN=1`, и при файле `<data>/net/KILL`; только GET по `https`, белый список `config/net_allowlist.json` |
 
 ## 2. Защиты в коде
@@ -25,6 +25,9 @@
 | Граница каталога данных | `src/path_guard.py` | путь после `Path.resolve()` обязан быть внутри `BASE_DIR`, плюс чёрный список `FORBIDDEN_PATHS` |
 | Файлы секретов | `src/secrets_paths.py::secret_path` | токены облаков и пары ТВ — в `<BASE_DIR>/secrets/`, запись атомарно в той же папке |
 | Песочница патчей (INV-21) | `src/sandbox_environment.py` | `safe_subprocess_env` чистит секретные переменные, `_copy_filtered` не копирует файлы секретов |
+| Единая точка записи в ТВ под Σ | `src/sigma_live.py::tv_client`, `Guarded`, `refusal`; `src/test_b33v2_sigma_single_point.py` | боевой режим — отказ до создания клиента и перед каждым вызовом (в том числе по строке `OKO_SIGMA_LIVE=1` в `.env` для долгих мостов); сторож по AST ловит новый клиент ТВ и новый модуль с сырой записью в ТВ вне списка |
+| Повтор `CJK_GUARD` через судью | `src/governor.py::_cjk_guard` | новая генерация проверяется судьёй (`where=cjk_retry`); не PASS — уходит `cjk_strip` исходного проверенного текста |
+| Уведомления владельцу | `tools/notify.py` | адресат — только `OKO_HOST_USER_ID` (положительный и из `ADMIN_USER_IDS`, иначе `no_chat`); текст маскируется (список — `docs/SECURITY_AND_DATA.md`); при `OKO_NOTIFY_OFF=1` или файле `<data>/net/KILL` сокет не открывается |
 | Журнал согласий | `src/consent.py`, `tools/consent.py` | только дописывание, цепочка `prev_sha16 → entry_sha16`, проверка `verify` |
 | Тесты без секретов и сети | `src/conftest.py` | временный `AI_BASE_DIR`, токен `test-token-not-real`, пустой `ADMIN_USER_IDS` |
 
@@ -40,7 +43,7 @@
   константой — `assert True`, `assert x or True` — проверкой не считается), новый skip / xfail, шире допуск —
   красный, если нет строки в `.github/test_weakening_allow.txt`. B33: охраняемая зона (`conftest.py`, `pytest.ini`,
   `docs/control_map.csv`, `config/net_direct_registry.json`, `.github/workflows/`, код сторожа и верификатора,
-  `src/test_ci_gate.py`) — любая правка, исчезнувший из карты тест, новый `known_gap`, падение PASS в
+  `src/test_ci_gate.py`, `tools/guard_mutation_smoke.py`, `tools/impl_mutation_smoke.py`) — любая правка, исчезнувший из карты тест, новый `known_gap`, падение PASS в
   `docs/CONTROL_MAP.md` — красный без строки в `.github/guarded_change_allow.txt`. Строка:
   `<ключ> | <причина> | <YYYY-MM-DD> | <код согласия> | <entry_sha16>`; списки читаются из ревизии head (`git show`),
   нет файла — пустой список; плохая строка, повтор ключа или `entry_sha16`, нет опубликованной базы (merge-base с
@@ -50,7 +53,9 @@
   `push_*_stage`): строка, добавленная в блоке, без записи [1] в журнале — пуша нет.
 - Сторож запускается дважды: кодом снимка и кодом ОПУБЛИКОВАННОЙ БАЗЫ (`git show <merge-base>:...`), поэтому правка сторожа не может
   разрешить сама себя и действует со следующего снимка. Мутационный smoke `tools/guard_mutation_smoke.py`: известные
-  порчи красной зоны (в том числе три аудитные) обязаны быть пойманы — иначе красный джоб.
+  порчи красной зоны (в том числе три аудитные) обязаны быть пойманы — иначе красный джоб. Мутационный smoke
+  реализации `tools/impl_mutation_smoke.py`: сломанный код красной зоны (потолок громкости, срок подтверждения,
+  `sigma_gate.live_enabled`, проверка хозяина, `sigma_live.live`) обязан ронять подтверждающие тесты; контроль без мутаций — зелёный.
 - Сторож живых часов в тестах — `src/clock_guard.py`, тест `src/test_clock_guard_b30.py`, исключения —
   `.github/live_clock_allow.txt`.
 - Пропуски и xfail сверяются со списками: `.github/known_skips.txt` (14), `.github/known_skips_linux.txt` (16),
@@ -64,10 +69,10 @@
 
 ## 4. Статус инвариантов
 
-По `docs/CONTROL_MAP.md` на `fdbb004`: 21 инвариант, красная зона — 15, рабочая — 6. Статус по JUnit обеих платформ:
-PASS 10 · GAP 10 · MANUAL 1 · FAIL 0; коды ядра (`docs/kernel_codes.txt` против реестра `src/governor.py`) — PASS.
-Сама карта отмечает: «внешней сверки этой версии не было». Прогон CI для `fdbb004` (из задачи): `control-map`
-`both_platforms=yes EXIT=0`.
+По `docs/CONTROL_MAP.md` в снимке B33: 21 инвариант, красная зона — 15, рабочая — 6. Статус по JUnit обеих платформ:
+PASS 9 · GAP 11 · MANUAL 1 · FAIL 0; коды ядра (`docs/kernel_codes.txt` против реестра `src/governor.py`, 15 кодов) — PASS.
+Относительно предыдущего среза INV-05 перешёл из PASS в GAP: у строки появился `known_gap` (см. ниже). Сама карта
+отмечает: «внешней сверки этой версии не было». Итог CI для этого снимка в задаче не приводился.
 
 ## 5. Честные пробелы
 
@@ -79,6 +84,7 @@ PASS 10 · GAP 10 · MANUAL 1 · FAIL 0; коды ядра (`docs/kernel_codes.t
 | Без `OKO_SIGMA_SHADOW=1` и `OKO_SIGMA_LIVE=1` вердикт Σ не считается и не пишется вовсе; INV-10 говорит «только считается и пишется в журнал». | `src/tv_bot_handler.py::_execute`, `shadow_enabled` |
 | Сбой маршрутизатора отдаёт текст модели (fail-open к модели, не к устройству). | `src/bot.py::_route_reply`, `ROUTE_ERROR` |
 | Мимо судьи идут: служебный маркер целиком и режим ТОЛК (`/talk`, осознанно: только текст, привода нет). Повтор `CJK_GUARD` с B33 — через судью. | `src/governor.py::_cjk_guard`, `src/sandbox_talk.py`, `docs/ARCHITECTURE.md` §3 |
+| Тесты охраны единой точки записи в ТВ (`src/test_b33v2_sigma_single_point.py`) не внесены в колонку `tests` строки INV-05 до перегенерации фикстуры JUnit `src/control_map_junit/` (снята до B33); два исполнителя на один ТВ без блокировки. | INV-05, known_gap в `docs/control_map.csv` |
 | Песочница — не граница безопасности: диск и сеть дочернему процессу доступны; в живых службах не используется. | INV-21, known_gap |
 | Порядок «правила раньше модели» в `bot.py` для всех видов сообщений подтверждён только чтением исходника. | INV-02, known_gap |
 | SHA снимка, на котором сгенерирована карта, теперь только в артефакте `control-map`; артефакт хранится 7 дней (`retention-days: 7`). | `docs/CONTROL_MAP.md`, `.github/workflows/pytest.yml` |
